@@ -1,0 +1,16 @@
+#
+# Ignore common audio/video media so storage stays clean.
+#
+*.aac
+*.aiff
+*.flac
+*.m4a
+*.mkv
+*.mp3
+*.mp4
+*.mov
+*.ogg
+*.wav
+*.wma
+*.webm
+*.asd
