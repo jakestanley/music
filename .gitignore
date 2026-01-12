@@ -16,3 +16,4 @@
 *.asd
 .localized
 **/
+.env

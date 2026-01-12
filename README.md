@@ -9,6 +9,7 @@ These scripts assume the following tools are installed and available on your `PA
 - `spotdl` for Spotify downloads
 - `demucs` for stem separation
 - `yt-dlp` and `id3v2` for YouTube downloads + tagging
+- `curl` for UpSnap API calls (Windows offload only)
 
 ## Getting started
 
@@ -25,6 +26,42 @@ git checkout main
 
 # ignore any symlinks in this directory, we don't want to check those in
 find . -type l | sed -e s'/^\.\///g' >> .gitignore
+```
+
+## Expected folder structure
+
+The scripts assume a root directory per project or playlist. Each root contains an `unprocessed/` folder with source MP3s, plus output folders for Demucs stems:
+
+```
+<PLAYLIST_TARGET_DIR>/
+  unprocessed/
+    Track One.mp3
+    Track Two.mp3
+  all/
+    Track One/
+      vocals.wav
+      drums.wav
+      bass.wav
+      other.wav
+    Track Two/
+      vocals.wav
+      drums.wav
+      bass.wav
+      other.wav
+  vocals/
+    Track One/
+      vocals.wav
+    Track Two/
+      vocals.wav
+```
+
+You can create multiple roots under the main Music directory, for example:
+
+```
+~/Music/
+  music-tooling/  # this repo
+  BATW_Candidates/
+  CardioMix/
 ```
 
 ## My use case
@@ -78,7 +115,7 @@ Purpose: separate each MP3 in `<PLAYLIST_TARGET_DIR>/unprocessed` into Demucs ou
 
 Usage:
 ```
-./demucs.sh <PLAYLIST_TARGET_DIR> [4|2|both]
+./demucs.sh [--windows] <PLAYLIST_TARGET_DIR> [4|2|both]
 ```
 
 | Option | Description |
@@ -87,6 +124,27 @@ Usage:
 | `[4|2|both]` | decide whether to produce only the four-stem directories, only the two-stem vocal isolations, or both |
 
 The script creates staging directories, runs Demucs as needed, and keeps the temporary work directories clean.
+
+### Windows GPU offload
+
+- Use `--windows` to run Demucs on a Windows GPU box via SSH + UpSnap.
+- Copy `.env.example` to `.env` and fill in the required variables.
+- Required vars: `UPSNAP_HOST`, `UPSNAP_USERNAME`, `UPSNAP_PASSWORD`, `UPSNAP_DEVICE_NAME` (or `UPSNAP_DEVICE_ID`), `WINDOWS_SSH_TARGET`, `WINDOWS_SSH_KEY`.
+- Optional vars: `WINDOWS_DEMUCS_MODEL`, `WINDOWS_DEMUCS_DEVICE` (defaults to `cuda`), `WINDOWS_PYTHON` (use the pipx demucs venv python for CUDA checks; use forward slashes or double-backslashes).
+- The script does not keep any files on the Windows machine after completion.
+
+#### Setup (pipx + Python 3.11 + PyTorch 2.1):
+1) Install Python 3.11 with winget: `winget install --id Python.Python.3.11 -e`
+2) Reinstall demucs under Python 3.11:
+   - `pipx uninstall demucs`
+   - `pipx install demucs --python "C:\Users\mail\AppData\Local\Programs\Python\Python311\python.exe"`
+3) Install CUDA-enabled PyTorch 2.1 stack:
+   - `pipx runpip demucs uninstall torch torchaudio torchvision -y`
+   - `pipx runpip demucs install "torch==2.1.*" "torchvision==0.16.*" "torchaudio==2.1.*" --index-url https://download.pytorch.org/whl/cu121`
+4) If you hit NumPy 2.x compatibility errors, pin NumPy 1.x:
+   - `pipx runpip demucs install "numpy<2"`
+
+Note: Demucs docs recommend `torchaudio` <= 2.1 for CUDA support; newer versions may fail.
 
 ## `ytdlp.sh`
 
