@@ -2,6 +2,23 @@
 
 This workspace holds helper scripts for downloading music assets and generating stems.
 
+## Getting started
+
+You're probably going to want to check this project out into an existing Music directory but skip this if you aren't. `cd` into that directory and run the following:
+
+```
+# initialise the repository with a temporary branch we'll remove later
+git init -b temp
+
+git remote add origin git@github.com:jakestanley/music.git
+git fetch -a
+git checkout -t origin
+git checkout main
+
+# ignore any symlinks in this directory, we don't want to check those in
+find . -type l | sed -e s'/^\.\///g' >> .gitignore
+```
+
 ## `demucspot.sh`
 
 Purpose: download a Spotify playlist with `spotdl`, then separate each downloaded track into demucs outputs (a full 4-stem mix and a 2-stem vocal isolate). The script avoids re-running Demucs for tracks that already have the requested stems.
