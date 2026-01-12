@@ -43,6 +43,13 @@ case "$MODE" in
     ;;
 esac
 
+if [ ! -d "$ROOT" ]; then
+  echo "Root directory not found: $ROOT" >&2
+  exit 1
+fi
+
+ROOT="$(cd "$ROOT" && pwd -P)"
+
 BASE_DIR="$ROOT/unprocessed"
 ALL_DIR="$ROOT/all"
 VOCALS_DIR="$ROOT/vocals"

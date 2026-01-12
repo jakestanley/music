@@ -32,6 +32,15 @@ ROOT="$2"
 
 BASE_DIR="$ROOT/unprocessed"
 
+if [ ! -d "$ROOT" ]; then
+  echo "Root directory not found: $ROOT" >&2
+  exit 1
+fi
+
+ROOT="$(cd "$ROOT" && pwd -P)"
+
+BASE_DIR="$ROOT/unprocessed"
+
 mkdir -p "$BASE_DIR"
 cd "$BASE_DIR"
 
