@@ -32,13 +32,24 @@ done
 
 set -- "${POSITIONAL[@]}"
 
-if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
-  echo "Usage: $0 [--windows] [--clean] <ROOT_DIR> [4|2|both]" >&2
+if [ "$#" -lt 1 ]; then
+  echo "Usage: $0 [--windows] [--clean] <ROOT_DIR...> [4|2|both]" >&2
   exit 1
 fi
 
-ROOT="$1"
-MODE="${2:-both}"
+MODE="both"
+last_index=$(($# - 1))
+last_arg="${!#}"
+if [[ "$last_arg" == "4" || "$last_arg" == "2" || "$last_arg" == "both" ]]; then
+  MODE="$last_arg"
+  unset "POSITIONAL[$last_index]"
+fi
+
+ROOTS=("${POSITIONAL[@]}")
+if [ "${#ROOTS[@]}" -eq 0 ]; then
+  echo "Usage: $0 [--windows] [--clean] <ROOT_DIR...> [4|2|both]" >&2
+  exit 1
+fi
 
 case "$MODE" in
   4|2|both) ;;
@@ -48,32 +59,50 @@ case "$MODE" in
     ;;
 esac
 
-if [ ! -d "$ROOT" ]; then
-  echo "Root directory not found: $ROOT" >&2
-  exit 1
-fi
-
-ROOT="$(cd "$ROOT" && pwd -P)"
-
-BASE_DIR="$ROOT/unprocessed"
-ALL_DIR="$ROOT/all"
-VOCALS_DIR="$ROOT/vocals"
-
 DEMUCS_MODEL="${DEMUCS_MODEL:-htdemucs}"
 
-if [ ! -d "$BASE_DIR" ]; then
-  echo "Unprocessed directory not found: $BASE_DIR" >&2
+HASH_CMD=()
+if command -v sha256sum >/dev/null 2>&1; then
+  HASH_CMD=(sha256sum)
+elif command -v shasum >/dev/null 2>&1; then
+  HASH_CMD=(shasum -a 256)
+else
+  echo "Missing hash tool (sha256sum or shasum required)" >&2
   exit 1
 fi
 
-shopt -s nullglob
-mp3_files=("$BASE_DIR"/*.mp3)
-shopt -u nullglob
+declare -A ROOT_BASE_DIR ROOT_ALL_DIR ROOT_VOCALS_DIR ROOT_MP3S ROOT_CACHE_FILE
+ROOTS_ABS=()
+for root in "${ROOTS[@]}"; do
+  if [ ! -d "$root" ]; then
+    echo "Root directory not found: $root" >&2
+    exit 1
+  fi
+  root_abs="$(cd "$root" && pwd -P)"
+  base_dir="$root_abs/unprocessed"
+  all_dir="$root_abs/all"
+  vocals_dir="$root_abs/vocals"
 
-if [ "${#mp3_files[@]}" -eq 0 ]; then
-  echo "No MP3 files found in $BASE_DIR" >&2
-  exit 0
-fi
+  if [ ! -d "$base_dir" ]; then
+    echo "Unprocessed directory not found: $base_dir" >&2
+    exit 1
+  fi
+
+  shopt -s nullglob
+  mp3_list=("$base_dir"/*.mp3)
+  shopt -u nullglob
+
+  ROOTS_ABS+=("$root_abs")
+  ROOT_BASE_DIR["$root_abs"]="$base_dir"
+  ROOT_ALL_DIR["$root_abs"]="$all_dir"
+  ROOT_VOCALS_DIR["$root_abs"]="$vocals_dir"
+  ROOT_MP3S["$root_abs"]="$(printf '%s\n' "${mp3_list[@]}")"
+  ROOT_CACHE_FILE["$root_abs"]="$root_abs/.demucs_hash_cache"
+done
+
+declare -A FILE_HASH HASH_TO_ALL_DIR HASH_TO_VOCALS_DIR ROOT_SYMLINKED ROOT_MISSING ROOT_TOTAL
+declare -A CACHE_HASH CACHE_MTIME CACHE_SIZE CACHE_DIRTY
+CURRENT_ROOT=""
 
 missing_files=()
 normalize_windows_name() {
@@ -84,9 +113,187 @@ normalize_windows_name() {
   printf '%s' "$n"
 }
 
-collect_missing_files() {
-  local f name win_name
+file_mtime() {
+  if stat -c %Y "$1" >/dev/null 2>&1; then
+    stat -c %Y "$1"
+  else
+    stat -f %m "$1"
+  fi
+}
+
+file_size() {
+  if stat -c %s "$1" >/dev/null 2>&1; then
+    stat -c %s "$1"
+  else
+    stat -f %z "$1"
+  fi
+}
+
+load_cache_for_root() {
+  local root="$1"
+  local cache_file="${ROOT_CACHE_FILE[$root]}"
+  if [ -f "$cache_file" ]; then
+    while IFS=$'\t' read -r path mtime size hash; do
+      [ -n "$path" ] || continue
+      CACHE_MTIME["$path"]="$mtime"
+      CACHE_SIZE["$path"]="$size"
+      CACHE_HASH["$path"]="$hash"
+    done < "$cache_file"
+  else
+    CACHE_DIRTY["$root"]=1
+  fi
+}
+
+save_cache_for_root() {
+  local root="$1"
+  local cache_file="${ROOT_CACHE_FILE[$root]}"
+  local tmp_file="${cache_file}.tmp"
+  : > "$tmp_file"
+  local count=0
+  local base_dir="${ROOT_BASE_DIR[$root]}"
+  local f hash
+  shopt -s nullglob
+  local mp3_list=("$base_dir"/*.mp3)
+  shopt -u nullglob
+  for f in "${mp3_list[@]}"; do
+    hash="${CACHE_HASH[$f]-}"
+    if [ -z "$hash" ]; then
+      hash="$(get_file_hash "$f")"
+    fi
+    local mtime="${CACHE_MTIME[$f]-}"
+    local size="${CACHE_SIZE[$f]-}"
+    if [ -z "$mtime" ] || [ -z "$size" ]; then
+      mtime="$(file_mtime "$f")"
+      size="$(file_size "$f")"
+      CACHE_MTIME["$f"]="$mtime"
+      CACHE_SIZE["$f"]="$size"
+    fi
+    printf '%s\t%s\t%s\t%s\n' "$f" "$mtime" "$size" "$hash" >> "$tmp_file"
+    count=$((count + 1))
+  done
+  if [ -f "$cache_file" ]; then
+    cat "$cache_file" "$tmp_file" \
+      | awk -F'\t' '{a[$1]=$0; order[NR]=$1} END{for (i=1;i<=NR;i++){k=order[i]; if(!seen[k]++){print a[k]}}}' \
+      > "$cache_file"
+    rm -f "$tmp_file"
+  else
+    mv "$tmp_file" "$cache_file"
+  fi
+  echo "Saved hash cache to $cache_file ($count entries)"
+  CACHE_DIRTY["$root"]=0
+}
+
+get_file_hash() {
+  local f="$1"
+  if [ -n "${FILE_HASH[$f]-}" ]; then
+    printf '%s' "${FILE_HASH[$f]}"
+    return 0
+  fi
+  local mtime size
+  mtime="$(file_mtime "$f")"
+  size="$(file_size "$f")"
+  if [ -n "${CACHE_HASH[$f]-}" ] && [ "${CACHE_MTIME[$f]-}" = "$mtime" ] && [ "${CACHE_SIZE[$f]-}" = "$size" ]; then
+    FILE_HASH["$f"]="${CACHE_HASH[$f]}"
+    printf '%s' "${CACHE_HASH[$f]}"
+    return 0
+  fi
+  local hash
+  hash="$("${HASH_CMD[@]}" "$f" | awk '{print $1}')"
+  FILE_HASH["$f"]="$hash"
+  CACHE_HASH["$f"]="$hash"
+  CACHE_MTIME["$f"]="$mtime"
+  CACHE_SIZE["$f"]="$size"
+  if [ -n "$CURRENT_ROOT" ]; then
+    CACHE_DIRTY["$CURRENT_ROOT"]=1
+  fi
+  printf '%s' "$hash"
+}
+
+find_stem_dir() {
+  local stem_root="$1"
+  shift
+  local candidate
+  for candidate in "$@"; do
+    if [ -f "$stem_root/$candidate/vocals.wav" ]; then
+      printf '%s' "$stem_root/$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+build_hash_index() {
+  local root f name win_name
+  for root in "${ROOTS_ABS[@]}"; do
+    CURRENT_ROOT="$root"
+    load_cache_for_root "$root"
+    local all_dir="${ROOT_ALL_DIR[$root]}"
+    local vocals_dir="${ROOT_VOCALS_DIR[$root]}"
+    local mp3_list="${ROOT_MP3S[$root]}"
+    [ -n "$mp3_list" ] || continue
+    local total=0
+    local hashed=0
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      total=$((total + 1))
+    done <<<"$mp3_list"
+    ROOT_TOTAL["$root"]="$total"
+    echo "Hashing index for $root ($total files)..."
+
+    local processed=0
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      processed=$((processed + 1))
+      if [ "$processed" -eq 1 ] || [ $((processed % 10)) -eq 0 ] || [ "$processed" -eq "$total" ]; then
+        echo "  hashed $processed/$total"
+      fi
+      name="$(basename "$f" .mp3)"
+      win_name=""
+      if [ "$USE_WINDOWS" -eq 1 ]; then
+        win_name="$(normalize_windows_name "$name")"
+      fi
+      local name_candidates=("$name")
+      if [ -n "$win_name" ] && [ "$win_name" != "$name" ]; then
+        name_candidates+=("$win_name")
+      fi
+      local hash
+      hash="$(get_file_hash "$f")"
+      hashed=$((hashed + 1))
+
+      if [[ "$MODE" == "4" || "$MODE" == "both" ]]; then
+        local stem_dir
+        if stem_dir="$(find_stem_dir "$all_dir" "${name_candidates[@]}")"; then
+          if [ -z "${HASH_TO_ALL_DIR[$hash]-}" ]; then
+            HASH_TO_ALL_DIR["$hash"]="$stem_dir"
+          fi
+        fi
+      fi
+
+      if [[ "$MODE" == "2" || "$MODE" == "both" ]]; then
+        local stem_dir
+        if stem_dir="$(find_stem_dir "$vocals_dir" "${name_candidates[@]}")"; then
+          if [ -z "${HASH_TO_VOCALS_DIR[$hash]-}" ]; then
+            HASH_TO_VOCALS_DIR["$hash"]="$stem_dir"
+          fi
+        fi
+      fi
+      if [ $((processed % 10)) -eq 0 ]; then
+        CACHE_DIRTY["$root"]=1
+        save_cache_for_root "$root"
+      fi
+    done <<<"$mp3_list"
+    CACHE_DIRTY["$root"]=1
+    save_cache_for_root "$root"
+    echo "Indexed $hashed hashes for $root."
+  done
+}
+
+prepare_missing_files() {
+  local f name win_name hash
   missing_files=()
+  local symlinked=0
+  local missing=0
+  mkdir -p "$ALL_DIR" "$VOCALS_DIR"
   for f in "${mp3_files[@]}"; do
     name="$(basename "$f" .mp3)"
     win_name=""
@@ -97,40 +304,82 @@ collect_missing_files() {
     if [ -n "$win_name" ] && [ "$win_name" != "$name" ]; then
       name_candidates+=("$win_name")
     fi
+
+    local need_all=0
+    local need_vocals=0
+
     if [[ "$MODE" == "4" || "$MODE" == "both" ]]; then
-      local found=0
-      local candidate
-      for candidate in "${name_candidates[@]}"; do
-        if [ -f "$ALL_DIR/$candidate/vocals.wav" ]; then
-          found=1
-          break
-        fi
-      done
-      if [ "$found" -eq 0 ]; then
-        missing_files+=("$f")
-        continue
+      if ! find_stem_dir "$ALL_DIR" "${name_candidates[@]}" >/dev/null; then
+        need_all=1
       fi
     fi
+
     if [[ "$MODE" == "2" || "$MODE" == "both" ]]; then
-      local found=0
-      local candidate
-      for candidate in "${name_candidates[@]}"; do
-        if [ -f "$VOCALS_DIR/$candidate/vocals.wav" ]; then
-          found=1
-          break
-        fi
-      done
-      if [ "$found" -eq 0 ]; then
-        missing_files+=("$f")
-        continue
+      if ! find_stem_dir "$VOCALS_DIR" "${name_candidates[@]}" >/dev/null; then
+        need_vocals=1
       fi
+    fi
+
+    if [ "$need_all" -eq 1 ] || [ "$need_vocals" -eq 1 ]; then
+      hash="$(get_file_hash "$f")"
+    fi
+
+    if [ "$need_all" -eq 1 ] && [ -n "${HASH_TO_ALL_DIR[$hash]-}" ]; then
+      local src_dir="${HASH_TO_ALL_DIR[$hash]}"
+      local dest_dir="$ALL_DIR/$name"
+      if [ ! -e "$dest_dir" ]; then
+        ln -s "$src_dir" "$dest_dir"
+        echo "✓ exists, symlinking $dest_dir -> $src_dir"
+        symlinked=$((symlinked + 1))
+      fi
+      if [ -f "$dest_dir/vocals.wav" ]; then
+        need_all=0
+      fi
+    fi
+
+    if [ "$need_vocals" -eq 1 ] && [ -n "${HASH_TO_VOCALS_DIR[$hash]-}" ]; then
+      local src_dir="${HASH_TO_VOCALS_DIR[$hash]}"
+      local dest_dir="$VOCALS_DIR/$name"
+      if [ ! -e "$dest_dir" ]; then
+        ln -s "$src_dir" "$dest_dir"
+        echo "✓ exists, symlinking $dest_dir -> $src_dir"
+        symlinked=$((symlinked + 1))
+      fi
+      if [ -f "$dest_dir/vocals.wav" ]; then
+        need_vocals=0
+      fi
+    fi
+
+    if [ "$need_all" -eq 1 ] || [ "$need_vocals" -eq 1 ]; then
+      missing_files+=("$f")
+      missing=$((missing + 1))
     fi
   done
+  ROOT_SYMLINKED["$ROOT"]="$symlinked"
+  ROOT_MISSING["$ROOT"]="$missing"
+}
+
+set_root_context() {
+  ROOT="$1"
+  CURRENT_ROOT="$ROOT"
+  BASE_DIR="${ROOT_BASE_DIR[$ROOT]}"
+  ALL_DIR="${ROOT_ALL_DIR[$ROOT]}"
+  VOCALS_DIR="${ROOT_VOCALS_DIR[$ROOT]}"
+  mp3_files=()
+  local list="${ROOT_MP3S[$ROOT]}"
+  if [ -n "$list" ]; then
+    IFS=$'\n' read -r -d '' -a mp3_files < <(printf '%s\0' "$list")
+  fi
 }
 
 run_local() {
   local f name
   local tmp_dir="$HOME/Music/.demucs_tmp"
+
+  if [ "${#mp3_files[@]}" -eq 0 ]; then
+    echo "No MP3 files found in $BASE_DIR"
+    return 0
+  fi
 
   rm -rf "$tmp_dir"
   mkdir -p "$tmp_dir" "$BASE_DIR" "$ALL_DIR" "$VOCALS_DIR"
@@ -212,10 +461,9 @@ run_windows() {
   local windows_gpu_max_temp="${WINDOWS_GPU_MAX_TEMP:-80}"
   local windows_gpu_resume_temp="${WINDOWS_GPU_RESUME_TEMP:-70}"
 
-  collect_missing_files
   if [ "${#missing_files[@]}" -eq 0 ]; then
     echo "All requested stems exist for $ROOT; skipping remote run."
-    exit 0
+    return 0
   fi
 
   local ssh_cmd=(ssh -i "$WINDOWS_SSH_KEY" "$WINDOWS_SSH_TARGET")
@@ -268,9 +516,16 @@ run_windows() {
       win_ps "Remove-Item -Recurse -Force '$win_tmp'" >/dev/null 2>&1
     fi
     if [ "${should_sleep-0}" -eq 1 ] && [ -n "${device_id-}" ] && [ -n "${token-}" ]; then
-      if read -r -t 120 -p "Press Enter to skip Windows sleep (auto-sleep in 120s): " _; then
-        echo "Skipping Windows sleep."
-        return
+      if [ -r /dev/tty ] && [ -t 0 ]; then
+        if read -r -t 120 -p "Press Enter to skip Windows sleep (auto-sleep in 120s): " _ </dev/tty; then
+          echo "Skipping Windows sleep."
+          return
+        fi
+      else
+        if read -r -t 120 -p "Press Enter to skip Windows sleep (auto-sleep in 120s): " _; then
+          echo "Skipping Windows sleep."
+          return
+        fi
       fi
       curl -s "$UPSNAP_HOST/api/upsnap/shutdown/$device_id" -H "Authorization: Bearer $token" >/dev/null 2>&1
     fi
@@ -378,8 +633,23 @@ run_windows() {
   fi
 }
 
-if [ "$USE_WINDOWS" -eq 1 ]; then
-  run_windows
-else
-  run_local
-fi
+build_hash_index
+
+for root in "${ROOTS_ABS[@]}"; do
+  set_root_context "$root"
+  if [ "${#mp3_files[@]}" -eq 0 ]; then
+    echo "No MP3 files found in $BASE_DIR"
+    continue
+  fi
+  prepare_missing_files
+  total_count="${ROOT_TOTAL[$root]:-${#mp3_files[@]}}"
+  symlinked_count="${ROOT_SYMLINKED[$root]:-0}"
+  missing_count="${ROOT_MISSING[$root]:-0}"
+  echo "Root summary for $root: $total_count tracks, $symlinked_count symlinked, $missing_count to process."
+  if [ "$USE_WINDOWS" -eq 1 ]; then
+    run_windows
+  else
+    run_local
+  fi
+  save_cache_for_root "$root"
+done

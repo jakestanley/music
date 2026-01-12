@@ -115,7 +115,7 @@ Purpose: separate each MP3 in `<PLAYLIST_TARGET_DIR>/unprocessed` into Demucs ou
 
 Usage:
 ```
-./demucs.sh [--windows] [--clean] <PLAYLIST_TARGET_DIR> [4|2|both]
+./demucs.sh [--windows] [--clean] <PLAYLIST_TARGET_DIR...> [4|2|both]
 ```
 
 | Option | Description |
@@ -133,6 +133,7 @@ The script creates staging directories, runs Demucs as needed, and keeps the tem
 - Required vars: `UPSNAP_HOST`, `UPSNAP_USERNAME`, `UPSNAP_PASSWORD`, `UPSNAP_DEVICE_NAME` (or `UPSNAP_DEVICE_ID`), `WINDOWS_SSH_TARGET`, `WINDOWS_SSH_KEY`.
 - Optional vars: `WINDOWS_DEMUCS_MODEL`, `WINDOWS_DEMUCS_DEVICE` (defaults to `cuda`), `WINDOWS_PYTHON` (use the pipx demucs venv python for CUDA checks; use forward slashes or double-backslashes), `WINDOWS_GPU_MAX_TEMP`, `WINDOWS_GPU_RESUME_TEMP`.
 - The script does not keep any files on the Windows machine after completion.
+- When multiple roots are provided, the script hashes `unprocessed/` files and symlinks missing stems to matching stems from other roots (saves time + disk).
 
 #### Setup (pipx + Python 3.11 + PyTorch 2.1):
 1) Install Python 3.11 with winget: `winget install --id Python.Python.3.11 -e`
@@ -182,3 +183,6 @@ Usage:
 ```
 
 The script ensures `yt-dlp` and `id3v2` are installed, sanitizes the artist/title for filenames, echoes the resolved parameters, asks for confirmation, downloads to `<TARGET_DIR>/<ARTIST> - <TITLE>.mp3`, and applies ID3 metadata (`Artist` and `Title` tags).
+
+# TODO
+- Figure out how to work around spotify rate limiting. get a developer account?
