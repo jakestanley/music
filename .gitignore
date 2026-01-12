@@ -14,3 +14,5 @@
 *.wma
 *.webm
 *.asd
+.localized
+**/
