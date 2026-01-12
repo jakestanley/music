@@ -67,19 +67,20 @@ fi
 ssh_cmd=(ssh -i "$WINDOWS_SSH_KEY" "$WINDOWS_SSH_TARGET")
 
 query_gpu() {
-  "${ssh_cmd[@]}" "powershell -NoProfile -Command \"nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits\""
+  "${ssh_cmd[@]}" "powershell -NoProfile -Command \"nvidia-smi --query-gpu=utilization.gpu,temperature.gpu,memory.used,memory.total --format=csv,noheader,nounits\""
 }
 
 format_line() {
-  local util mem_used mem_total
-  IFS=',' read -r util mem_used mem_total <<<"$1"
+  local util temp mem_used mem_total
+  IFS=',' read -r util temp mem_used mem_total <<<"$1"
   util="$(echo "$util" | xargs)"
+  temp="$(echo "$temp" | xargs)"
   mem_used="$(echo "$mem_used" | xargs)"
   mem_total="$(echo "$mem_total" | xargs)"
   local used_gb total_gb
   used_gb="$(awk -v v="$mem_used" 'BEGIN { printf "%.1f", v/1024 }')"
   total_gb="$(awk -v v="$mem_total" 'BEGIN { printf "%.1f", v/1024 }')"
-  printf "%s%%  %s/%s GB\n" "$util" "$used_gb" "$total_gb"
+  printf "%s%%  %sC  %s/%s GB\n" "$util" "$temp" "$used_gb" "$total_gb"
 }
 
 if [ "$ONCE" -eq 1 ]; then

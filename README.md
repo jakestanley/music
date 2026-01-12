@@ -156,12 +156,12 @@ Use `nvidia-smi` in query mode for compact output:
 nvidia-smi --query-gpu=timestamp,name,utilization.gpu,utilization.memory,memory.used,memory.total --format=csv,noheader,nounits -l 1
 ```
 
-PowerShell in-place view (utilization % + memory GB):
+PowerShell in-place view (utilization %, temp C, memory GB):
 ```
 while ($true) {
   Clear-Host
   nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits |
-    % { $p=$_.Split(','); "{0}%  {1:0.0}/{2:0.0} GB" -f $p[0].Trim(), ([double]$p[1]/1024), ([double]$p[2]/1024) }
+    % { $p=$_.Split(','); "{0}%  {1}C  {2:0.0}/{3:0.0} GB" -f $p[0].Trim(), $p[1].Trim(), ([double]$p[2]/1024), ([double]$p[3]/1024) }
   Start-Sleep -Seconds 1
 }
 ```
