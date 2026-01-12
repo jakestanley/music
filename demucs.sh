@@ -209,6 +209,8 @@ run_windows() {
     demucs_device_arg=(--device "$demucs_device")
   fi
   local windows_python="${WINDOWS_PYTHON:-python}"
+  local windows_gpu_max_temp="${WINDOWS_GPU_MAX_TEMP:-80}"
+  local windows_gpu_resume_temp="${WINDOWS_GPU_RESUME_TEMP:-70}"
 
   collect_missing_files
   if [ "${#missing_files[@]}" -eq 0 ]; then
@@ -328,11 +330,11 @@ run_windows() {
   "${scp_cmd[@]}" -r "${missing_files[@]}" "${WINDOWS_SSH_TARGET}:$win_input_scp/"
 
   if [[ "$MODE" == "4" || "$MODE" == "both" ]]; then
-    win_ps "\$env:PYTHONUTF8='1'; \$env:PYTHONIOENCODING='utf-8'; \$files = Get-ChildItem -Path '$win_input_ps' -Filter '*.mp3' -File | ForEach-Object { \$_.FullName }; if (\$files.Count -eq 0) { Write-Error 'No MP3 files found in Windows input folder'; exit 1 } ; demucs ${demucs_device_arg[*]} -n $DEMUCS_MODEL -o '$win_out4_ps' \$files"
+    win_ps "\$env:PYTHONUTF8='1'; \$env:PYTHONIOENCODING='utf-8'; \$maxTemp=$windows_gpu_max_temp; \$resumeTemp=$windows_gpu_resume_temp; function Get-GpuTemp { [int](nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits | Select-Object -First 1) }; function Wait-ForCool { while ((Get-GpuTemp) -gt \$resumeTemp) { Start-Sleep -Seconds 10 } }; \$files = Get-ChildItem -Path '$win_input_ps' -Filter '*.mp3' -File | ForEach-Object { \$_.FullName }; if (\$files.Count -eq 0) { Write-Error 'No MP3 files found in Windows input folder'; exit 1 } ; foreach (\$f in \$files) { if ((Get-GpuTemp) -gt \$maxTemp) { Wait-ForCool }; demucs ${demucs_device_arg[*]} -n $DEMUCS_MODEL -o '$win_out4_ps' \"\$f\" }"
   fi
 
   if [[ "$MODE" == "2" || "$MODE" == "both" ]]; then
-    win_ps "\$env:PYTHONUTF8='1'; \$env:PYTHONIOENCODING='utf-8'; \$files = Get-ChildItem -Path '$win_input_ps' -Filter '*.mp3' -File | ForEach-Object { \$_.FullName }; if (\$files.Count -eq 0) { Write-Error 'No MP3 files found in Windows input folder'; exit 1 } ; demucs ${demucs_device_arg[*]} -n $DEMUCS_MODEL --two-stems=vocals -o '$win_out2_ps' \$files"
+    win_ps "\$env:PYTHONUTF8='1'; \$env:PYTHONIOENCODING='utf-8'; \$maxTemp=$windows_gpu_max_temp; \$resumeTemp=$windows_gpu_resume_temp; function Get-GpuTemp { [int](nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits | Select-Object -First 1) }; function Wait-ForCool { while ((Get-GpuTemp) -gt \$resumeTemp) { Start-Sleep -Seconds 10 } }; \$files = Get-ChildItem -Path '$win_input_ps' -Filter '*.mp3' -File | ForEach-Object { \$_.FullName }; if (\$files.Count -eq 0) { Write-Error 'No MP3 files found in Windows input folder'; exit 1 } ; foreach (\$f in \$files) { if ((Get-GpuTemp) -gt \$maxTemp) { Wait-ForCool }; demucs ${demucs_device_arg[*]} -n $DEMUCS_MODEL --two-stems=vocals -o '$win_out2_ps' \"\$f\" }"
   fi
 
   mkdir -p "$ALL_DIR" "$VOCALS_DIR"
