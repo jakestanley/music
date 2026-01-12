@@ -7,15 +7,9 @@ set -euo pipefail
 # ROOT="$HOME/Music/BATW_Candidates"
 
 ### ARGUMENTS
-SKIP_SPOTDL=0
-
 POSITIONAL=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --skip-spotdl)
-      SKIP_SPOTDL=1
-      shift
-      ;;
     --)
       shift
       break
@@ -33,14 +27,13 @@ done
 
 set -- "${POSITIONAL[@]}"
 
-if [ "$#" -lt 2 ] || [ "$#" -gt 3 ]; then
-  echo "Usage: $0 [--skip-spotdl] <PLAYLIST_URL> <ROOT_DIR> [4|2|both]"
+if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+  echo "Usage: $0 <ROOT_DIR> [4|2|both]"
   exit 1
 fi
 
-PLAYLIST_URL="$1"
-ROOT="$2"
-MODE="${3:-both}"
+ROOT="$1"
+MODE="${2:-both}"
 
 case "$MODE" in
   4|2|both) ;;
@@ -64,13 +57,6 @@ rm -rf "$TMP_DIR"
 mkdir -p "$TMP_DIR" "$BASE_DIR" "$ALL_DIR" "$VOCALS_DIR"
 
 cd "$BASE_DIR"
-
-### DOWNLOAD
-if [ "$SKIP_SPOTDL" -eq 1 ]; then
-  echo "Skipping spotdl download (${PLAYLIST_URL})"
-else
-  spotdl "$PLAYLIST_URL"
-fi
 
 ### PROCESS FILES
 for f in $AUDIO_GLOB; do
