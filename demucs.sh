@@ -381,6 +381,8 @@ run_local() {
     return 0
   fi
 
+  echo "Local demucs: processing ${#mp3_files[@]} files in $BASE_DIR"
+
   rm -rf "$tmp_dir"
   mkdir -p "$tmp_dir" "$BASE_DIR" "$ALL_DIR" "$VOCALS_DIR"
 
@@ -536,6 +538,7 @@ run_windows() {
   curl -s "$UPSNAP_HOST/api/upsnap/wake/$device_id" -H "Authorization: Bearer $token" >/dev/null
   should_sleep=1
 
+  echo "Waiting for Windows SSH to become available..."
   for _ in {1..20}; do
     if "${ssh_cmd[@]}" -o BatchMode=yes -o ConnectTimeout=5 "exit" >/dev/null 2>&1; then
       break
@@ -547,6 +550,7 @@ run_windows() {
     echo "SSH not available on Windows host" >&2
     exit 1
   fi
+  echo "Windows SSH connected."
 
   if [ "$CLEAN_WINDOWS" -eq 1 ]; then
     win_ps "\$tmp = Join-Path \$env:TEMP 'demucs_tmp'; if (Test-Path \$tmp) { Remove-Item -Recurse -Force \$tmp }"
@@ -582,14 +586,18 @@ run_windows() {
     fi
   fi
 
+  echo "Uploading ${#missing_files[@]} files to Windows temp..."
   "${scp_cmd[@]}" -r "${missing_files[@]}" "${WINDOWS_SSH_TARGET}:$win_input_scp/"
+  echo "Upload complete."
 
   if [[ "$MODE" == "4" || "$MODE" == "both" ]]; then
-    win_ps "\$env:PYTHONUTF8='1'; \$env:PYTHONIOENCODING='utf-8'; \$maxTemp=$windows_gpu_max_temp; \$resumeTemp=$windows_gpu_resume_temp; function Get-GpuTemp { [int](nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits | Select-Object -First 1) }; function Wait-ForCool { while ((Get-GpuTemp) -gt \$resumeTemp) { Start-Sleep -Seconds 10 } }; \$files = Get-ChildItem -Path '$win_input_ps' -Filter '*.mp3' -File | ForEach-Object { \$_.FullName }; if (\$files.Count -eq 0) { Write-Error 'No MP3 files found in Windows input folder'; exit 1 } ; foreach (\$f in \$files) { if ((Get-GpuTemp) -gt \$maxTemp) { Wait-ForCool }; demucs ${demucs_device_arg[*]} -n $DEMUCS_MODEL -o '$win_out4_ps' \"\$f\" }"
+    echo "Running Windows 4-stem separation..."
+    win_ps "\$env:PYTHONUTF8='1'; \$env:PYTHONIOENCODING='utf-8'; \$maxTemp=$windows_gpu_max_temp; \$resumeTemp=$windows_gpu_resume_temp; function Get-GpuTemp { [int](nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits | Select-Object -First 1) }; function Wait-ForCool { while ((Get-GpuTemp) -gt \$resumeTemp) { Write-Host \"GPU hot (\$(Get-GpuTemp))C, waiting to cool to \$resumeTemp C\"; Start-Sleep -Seconds 10 } }; \$files = Get-ChildItem -Path '$win_input_ps' -Filter '*.mp3' -File | ForEach-Object { \$_.FullName }; if (\$files.Count -eq 0) { Write-Error 'No MP3 files found in Windows input folder'; exit 1 } ; foreach (\$f in \$files) { if ((Get-GpuTemp) -gt \$maxTemp) { Wait-ForCool }; demucs ${demucs_device_arg[*]} -n $DEMUCS_MODEL -o '$win_out4_ps' \"\$f\" }"
   fi
 
   if [[ "$MODE" == "2" || "$MODE" == "both" ]]; then
-    win_ps "\$env:PYTHONUTF8='1'; \$env:PYTHONIOENCODING='utf-8'; \$maxTemp=$windows_gpu_max_temp; \$resumeTemp=$windows_gpu_resume_temp; function Get-GpuTemp { [int](nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits | Select-Object -First 1) }; function Wait-ForCool { while ((Get-GpuTemp) -gt \$resumeTemp) { Start-Sleep -Seconds 10 } }; \$files = Get-ChildItem -Path '$win_input_ps' -Filter '*.mp3' -File | ForEach-Object { \$_.FullName }; if (\$files.Count -eq 0) { Write-Error 'No MP3 files found in Windows input folder'; exit 1 } ; foreach (\$f in \$files) { if ((Get-GpuTemp) -gt \$maxTemp) { Wait-ForCool }; demucs ${demucs_device_arg[*]} -n $DEMUCS_MODEL --two-stems=vocals -o '$win_out2_ps' \"\$f\" }"
+    echo "Running Windows 2-stem separation..."
+    win_ps "\$env:PYTHONUTF8='1'; \$env:PYTHONIOENCODING='utf-8'; \$maxTemp=$windows_gpu_max_temp; \$resumeTemp=$windows_gpu_resume_temp; function Get-GpuTemp { [int](nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits | Select-Object -First 1) }; function Wait-ForCool { while ((Get-GpuTemp) -gt \$resumeTemp) { Write-Host \"GPU hot (\$(Get-GpuTemp))C, waiting to cool to \$resumeTemp C\"; Start-Sleep -Seconds 10 } }; \$files = Get-ChildItem -Path '$win_input_ps' -Filter '*.mp3' -File | ForEach-Object { \$_.FullName }; if (\$files.Count -eq 0) { Write-Error 'No MP3 files found in Windows input folder'; exit 1 } ; foreach (\$f in \$files) { if ((Get-GpuTemp) -gt \$maxTemp) { Wait-ForCool }; demucs ${demucs_device_arg[*]} -n $DEMUCS_MODEL --two-stems=vocals -o '$win_out2_ps' \"\$f\" }"
   fi
 
   mkdir -p "$ALL_DIR" "$VOCALS_DIR"
