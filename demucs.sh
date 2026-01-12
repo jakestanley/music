@@ -229,6 +229,10 @@ run_windows() {
       win_ps "Remove-Item -Recurse -Force '$win_tmp'" >/dev/null 2>&1
     fi
     if [ "${should_sleep-0}" -eq 1 ] && [ -n "${device_id-}" ] && [ -n "${token-}" ]; then
+      if read -r -t 120 -p "Press Enter to skip Windows sleep (auto-sleep in 120s): " _; then
+        echo "Skipping Windows sleep."
+        return
+      fi
       curl -s "$UPSNAP_HOST/api/upsnap/shutdown/$device_id" -H "Authorization: Bearer $token" >/dev/null 2>&1
     fi
   }
