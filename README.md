@@ -143,8 +143,27 @@ The script creates staging directories, runs Demucs as needed, and keeps the tem
    - `pipx runpip demucs install "torch==2.1.*" "torchvision==0.16.*" "torchaudio==2.1.*" --index-url https://download.pytorch.org/whl/cu121`
 4) If you hit NumPy 2.x compatibility errors, pin NumPy 1.x:
    - `pipx runpip demucs install "numpy<2"`
+5) If torchaudio cannot write WAVs, install the soundfile backend:
+   - `pipx runpip demucs install soundfile`
 
 Note: Demucs docs recommend `torchaudio` <= 2.1 for CUDA support; newer versions may fail.
+
+### Sidenote: terse GPU usage (Windows)
+
+Use `nvidia-smi` in query mode for compact output:
+```
+nvidia-smi --query-gpu=timestamp,name,utilization.gpu,utilization.memory,memory.used,memory.total --format=csv,noheader,nounits -l 1
+```
+
+PowerShell in-place view (utilization % + memory GB):
+```
+while ($true) {
+  Clear-Host
+  nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits |
+    % { $p=$_.Split(','); "{0}%  {1:0.0}/{2:0.0} GB" -f $p[0].Trim(), ([double]$p[1]/1024), ([double]$p[2]/1024) }
+  Start-Sleep -Seconds 1
+}
+```
 
 ## `ytdlp.sh`
 

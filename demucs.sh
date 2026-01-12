@@ -70,22 +70,25 @@ if [ "${#mp3_files[@]}" -eq 0 ]; then
   exit 0
 fi
 
-stem_missing() {
+missing_files=()
+collect_missing_files() {
   local f name
+  missing_files=()
   for f in "${mp3_files[@]}"; do
     name="$(basename "$f" .mp3)"
     if [[ "$MODE" == "4" || "$MODE" == "both" ]]; then
       if [ ! -f "$ALL_DIR/$name/vocals.wav" ]; then
-        return 0
+        missing_files+=("$f")
+        continue
       fi
     fi
     if [[ "$MODE" == "2" || "$MODE" == "both" ]]; then
       if [ ! -f "$VOCALS_DIR/$name/vocals.wav" ]; then
-        return 0
+        missing_files+=("$f")
+        continue
       fi
     fi
   done
-  return 1
 }
 
 run_local() {
@@ -170,7 +173,8 @@ run_windows() {
   fi
   local windows_python="${WINDOWS_PYTHON:-python}"
 
-  if ! stem_missing; then
+  collect_missing_files
+  if [ "${#missing_files[@]}" -eq 0 ]; then
     echo "All requested stems exist for $ROOT; skipping remote run."
     exit 0
   fi
@@ -276,14 +280,14 @@ run_windows() {
     fi
   fi
 
-  "${scp_cmd[@]}" -r "$BASE_DIR"/*.mp3 "${WINDOWS_SSH_TARGET}:$win_input_scp/"
+  "${scp_cmd[@]}" -r "${missing_files[@]}" "${WINDOWS_SSH_TARGET}:$win_input_scp/"
 
   if [[ "$MODE" == "4" || "$MODE" == "both" ]]; then
-    win_ps "demucs ${demucs_device_arg[*]} -n $DEMUCS_MODEL -o '$win_out4_ps' '$win_input_ps\\*.mp3'"
+    win_ps "\$env:PYTHONUTF8='1'; \$env:PYTHONIOENCODING='utf-8'; \$files = Get-ChildItem -Path '$win_input_ps' -Filter '*.mp3' -File | ForEach-Object { \$_.FullName }; if (\$files.Count -eq 0) { Write-Error 'No MP3 files found in Windows input folder'; exit 1 } ; demucs ${demucs_device_arg[*]} -n $DEMUCS_MODEL -o '$win_out4_ps' \$files"
   fi
 
   if [[ "$MODE" == "2" || "$MODE" == "both" ]]; then
-    win_ps "demucs ${demucs_device_arg[*]} -n $DEMUCS_MODEL --two-stems=vocals -o '$win_out2_ps' '$win_input_ps\\*.mp3'"
+    win_ps "\$env:PYTHONUTF8='1'; \$env:PYTHONIOENCODING='utf-8'; \$files = Get-ChildItem -Path '$win_input_ps' -Filter '*.mp3' -File | ForEach-Object { \$_.FullName }; if (\$files.Count -eq 0) { Write-Error 'No MP3 files found in Windows input folder'; exit 1 } ; demucs ${demucs_device_arg[*]} -n $DEMUCS_MODEL --two-stems=vocals -o '$win_out2_ps' \$files"
   fi
 
   mkdir -p "$ALL_DIR" "$VOCALS_DIR"
@@ -291,16 +295,20 @@ run_windows() {
   if [[ "$MODE" == "4" || "$MODE" == "both" ]]; then
     "${scp_cmd[@]}" -r "${WINDOWS_SSH_TARGET}:$win_out4_scp/htdemucs" "$ALL_DIR/"
     if [ -d "$ALL_DIR/htdemucs" ]; then
-      mv "$ALL_DIR"/htdemucs/* "$ALL_DIR/"
-      rmdir "$ALL_DIR/htdemucs"
+      if compgen -G "$ALL_DIR/htdemucs/*" >/dev/null; then
+        mv "$ALL_DIR"/htdemucs/* "$ALL_DIR/"
+      fi
+      rmdir "$ALL_DIR/htdemucs" 2>/dev/null || true
     fi
   fi
 
   if [[ "$MODE" == "2" || "$MODE" == "both" ]]; then
     "${scp_cmd[@]}" -r "${WINDOWS_SSH_TARGET}:$win_out2_scp/htdemucs" "$VOCALS_DIR/"
     if [ -d "$VOCALS_DIR/htdemucs" ]; then
-      mv "$VOCALS_DIR"/htdemucs/* "$VOCALS_DIR/"
-      rmdir "$VOCALS_DIR/htdemucs"
+      if compgen -G "$VOCALS_DIR/htdemucs/*" >/dev/null; then
+        mv "$VOCALS_DIR"/htdemucs/* "$VOCALS_DIR/"
+      fi
+      rmdir "$VOCALS_DIR/htdemucs" 2>/dev/null || true
     fi
   fi
 }
