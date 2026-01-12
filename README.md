@@ -166,6 +166,12 @@ while ($true) {
 }
 ```
 
+Client-side SSH helper:
+```
+./gpu_status.sh --interval 1
+./gpu_status.sh --once
+```
+
 ## `ytdlp.sh`
 
 Purpose: download a single YouTube video’s audio as MP3 and tag it with the supplied artist/title.
