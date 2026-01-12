@@ -2,10 +2,15 @@
 set -euo pipefail
 
 ### ARGUMENTS
+CLEAN_WINDOWS=0
 USE_WINDOWS=0
 POSITIONAL=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --clean)
+      CLEAN_WINDOWS=1
+      shift
+      ;;
     --windows)
       USE_WINDOWS=1
       shift
@@ -28,7 +33,7 @@ done
 set -- "${POSITIONAL[@]}"
 
 if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
-  echo "Usage: $0 [--windows] <ROOT_DIR> [4|2|both]" >&2
+  echo "Usage: $0 [--windows] [--clean] <ROOT_DIR> [4|2|both]" >&2
   exit 1
 fi
 
@@ -71,19 +76,51 @@ if [ "${#mp3_files[@]}" -eq 0 ]; then
 fi
 
 missing_files=()
+normalize_windows_name() {
+  local n="$1"
+  while [[ "$n" =~ [[:space:].]$ ]]; do
+    n="${n%?}"
+  done
+  printf '%s' "$n"
+}
+
 collect_missing_files() {
-  local f name
+  local f name win_name
   missing_files=()
   for f in "${mp3_files[@]}"; do
     name="$(basename "$f" .mp3)"
+    win_name=""
+    if [ "$USE_WINDOWS" -eq 1 ]; then
+      win_name="$(normalize_windows_name "$name")"
+    fi
+    local name_candidates=("$name")
+    if [ -n "$win_name" ] && [ "$win_name" != "$name" ]; then
+      name_candidates+=("$win_name")
+    fi
     if [[ "$MODE" == "4" || "$MODE" == "both" ]]; then
-      if [ ! -f "$ALL_DIR/$name/vocals.wav" ]; then
+      local found=0
+      local candidate
+      for candidate in "${name_candidates[@]}"; do
+        if [ -f "$ALL_DIR/$candidate/vocals.wav" ]; then
+          found=1
+          break
+        fi
+      done
+      if [ "$found" -eq 0 ]; then
         missing_files+=("$f")
         continue
       fi
     fi
     if [[ "$MODE" == "2" || "$MODE" == "both" ]]; then
-      if [ ! -f "$VOCALS_DIR/$name/vocals.wav" ]; then
+      local found=0
+      local candidate
+      for candidate in "${name_candidates[@]}"; do
+        if [ -f "$VOCALS_DIR/$candidate/vocals.wav" ]; then
+          found=1
+          break
+        fi
+      done
+      if [ "$found" -eq 0 ]; then
         missing_files+=("$f")
         continue
       fi
@@ -254,6 +291,10 @@ run_windows() {
     exit 1
   fi
 
+  if [ "$CLEAN_WINDOWS" -eq 1 ]; then
+    win_ps "\$tmp = Join-Path \$env:TEMP 'demucs_tmp'; if (Test-Path \$tmp) { Remove-Item -Recurse -Force \$tmp }"
+  fi
+
   win_tmp="$(win_ps "\$tmp = Join-Path \$env:TEMP 'demucs_tmp'; New-Item -ItemType Directory -Path \$tmp -Force | Out-Null; Write-Output \$tmp")"
   win_tmp="${win_tmp//$'\r'/}"
   if [ -z "$win_tmp" ]; then
@@ -300,7 +341,16 @@ run_windows() {
     "${scp_cmd[@]}" -r "${WINDOWS_SSH_TARGET}:$win_out4_scp/htdemucs" "$ALL_DIR/"
     if [ -d "$ALL_DIR/htdemucs" ]; then
       if compgen -G "$ALL_DIR/htdemucs/*" >/dev/null; then
-        mv "$ALL_DIR"/htdemucs/* "$ALL_DIR/"
+        for src_dir in "$ALL_DIR"/htdemucs/*; do
+          [ -d "$src_dir" ] || continue
+          dest_dir="$ALL_DIR/$(basename "$src_dir")"
+          if [ -d "$dest_dir" ]; then
+            cp -a "$src_dir/." "$dest_dir/"
+            rm -rf "$src_dir"
+          else
+            mv "$src_dir" "$dest_dir"
+          fi
+        done
       fi
       rmdir "$ALL_DIR/htdemucs" 2>/dev/null || true
     fi
@@ -310,7 +360,16 @@ run_windows() {
     "${scp_cmd[@]}" -r "${WINDOWS_SSH_TARGET}:$win_out2_scp/htdemucs" "$VOCALS_DIR/"
     if [ -d "$VOCALS_DIR/htdemucs" ]; then
       if compgen -G "$VOCALS_DIR/htdemucs/*" >/dev/null; then
-        mv "$VOCALS_DIR"/htdemucs/* "$VOCALS_DIR/"
+        for src_dir in "$VOCALS_DIR"/htdemucs/*; do
+          [ -d "$src_dir" ] || continue
+          dest_dir="$VOCALS_DIR/$(basename "$src_dir")"
+          if [ -d "$dest_dir" ]; then
+            cp -a "$src_dir/." "$dest_dir/"
+            rm -rf "$src_dir"
+          else
+            mv "$src_dir" "$dest_dir"
+          fi
+        done
       fi
       rmdir "$VOCALS_DIR/htdemucs" 2>/dev/null || true
     fi

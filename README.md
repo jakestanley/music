@@ -115,7 +115,7 @@ Purpose: separate each MP3 in `<PLAYLIST_TARGET_DIR>/unprocessed` into Demucs ou
 
 Usage:
 ```
-./demucs.sh [--windows] <PLAYLIST_TARGET_DIR> [4|2|both]
+./demucs.sh [--windows] [--clean] <PLAYLIST_TARGET_DIR> [4|2|both]
 ```
 
 | Option | Description |
@@ -128,6 +128,7 @@ The script creates staging directories, runs Demucs as needed, and keeps the tem
 ### Windows GPU offload
 
 - Use `--windows` to run Demucs on a Windows GPU box via SSH + UpSnap.
+- Use `--clean` to delete the Windows temp work folder before starting.
 - Copy `.env.example` to `.env` and fill in the required variables.
 - Required vars: `UPSNAP_HOST`, `UPSNAP_USERNAME`, `UPSNAP_PASSWORD`, `UPSNAP_DEVICE_NAME` (or `UPSNAP_DEVICE_ID`), `WINDOWS_SSH_TARGET`, `WINDOWS_SSH_KEY`.
 - Optional vars: `WINDOWS_DEMUCS_MODEL`, `WINDOWS_DEMUCS_DEVICE` (defaults to `cuda`), `WINDOWS_PYTHON` (use the pipx demucs venv python for CUDA checks; use forward slashes or double-backslashes).
