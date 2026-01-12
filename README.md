@@ -19,23 +19,37 @@ git checkout main
 find . -type l | sed -e s'/^\.\///g' >> .gitignore
 ```
 
-## `demucspot.sh`
+## `spotdl.sh`
 
-Purpose: download a Spotify playlist with `spotdl`, then separate each downloaded track into demucs outputs (a full 4-stem mix and a 2-stem vocal isolate). The script avoids re-running Demucs for tracks that already have the requested stems.
+Purpose: download a Spotify playlist into an `unprocessed/` folder ready for Demucs.
 
 Usage:
 ```
-./demucspot.sh [--skip-spotdl] <PLAYLIST_URL> <ROOT_DIR> [4|2|both]
+./spotdl.sh <PLAYLIST_URL> <ROOT_DIR>
 ```
 
 | Option | Description |
 |--------|-------------|
-| `--skip-spotdl` | assumes the playlist tracks already exist under `<ROOT_DIR>/unprocessed` and skips downloading |
-| `<PLAYLIST_URL>` | Spotify playlist URL to fetch with `spotdl` when not skipping |
+| `<PLAYLIST_URL>` | Spotify playlist URL to fetch with `spotdl` |
+| `<ROOT_DIR>` | base path where the script stores `unprocessed/` |
+
+The script creates `<ROOT_DIR>/unprocessed`, switches into it, and runs `spotdl` for the supplied playlist.
+
+## `demucs.sh`
+
+Purpose: separate each MP3 in `<ROOT_DIR>/unprocessed` into Demucs outputs (a full 4-stem mix and/or a 2-stem vocal isolate). The script avoids re-running Demucs for tracks that already have the requested stems.
+
+Usage:
+```
+./demucs.sh <ROOT_DIR> [4|2|both]
+```
+
+| Option | Description |
+|--------|-------------|
 | `<ROOT_DIR>` | base path where the script stores `unprocessed/`, `all/`, and `vocals/` outputs |
 | `[4|2|both]` | decide whether to produce only the four-stem directories, only the two-stem vocal isolations, or both |
 
-The script creates staging directories, downloads the playlist (unless `--skip-spotdl` is provided), runs Demucs as needed, and keeps the temporary work directories clean.
+The script creates staging directories, runs Demucs as needed, and keeps the temporary work directories clean.
 
 ## `ytdlp.sh`
 
