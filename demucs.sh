@@ -566,6 +566,7 @@ run_windows() {
           return 0
         fi
       fi
+      echo "Requesting UpSnap sleep for Windows host..."
       curl -s "$UPSNAP_HOST/api/upsnap/shutdown/$device_id" -H "Authorization: Bearer $token" >/dev/null 2>&1
       return 0
     fi
