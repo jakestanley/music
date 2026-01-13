@@ -131,8 +131,9 @@ The script creates staging directories, runs Demucs as needed, and keeps the tem
 - Use `--clean` to delete the Windows temp work folder before starting.
 - Copy `.env.example` to `.env` and fill in the required variables.
 - Required vars: `UPSNAP_HOST`, `UPSNAP_USERNAME`, `UPSNAP_PASSWORD`, `UPSNAP_DEVICE_NAME` (or `UPSNAP_DEVICE_ID`), `WINDOWS_SSH_TARGET`, `WINDOWS_SSH_KEY`.
-- Optional vars: `WINDOWS_DEMUCS_MODEL`, `WINDOWS_DEMUCS_DEVICE` (defaults to `cuda`), `WINDOWS_PYTHON` (use the pipx demucs venv python for CUDA checks; use forward slashes or double-backslashes), `WINDOWS_GPU_MAX_TEMP`, `WINDOWS_GPU_RESUME_TEMP`, `WINDOWS_BATCH_SIZE` (upload/run in batches; default 10), `WINDOWS_AWAKE_MINUTES` (PowerToys Awake duration per batch; default 10).
+- Optional vars: `WINDOWS_DEMUCS_MODEL`, `WINDOWS_DEMUCS_DEVICE` (defaults to `cuda`), `WINDOWS_PYTHON` (use the pipx demucs venv python for CUDA checks; use forward slashes or double-backslashes), `WINDOWS_GPU_MAX_TEMP`, `WINDOWS_GPU_RESUME_TEMP`, `WINDOWS_BATCH_SIZE` (upload/run in batches; default 10), `WINDOWS_AWAKE_MINUTES` (PowerToys Awake duration per batch; default 10), `WINDOWS_SLEEP_PROMPT_TIMEOUT` (seconds before auto-sleep prompt defaults; default 120).
 - Optional: install PowerToys Awake to prevent sleep during long runs: `winget install --id Microsoft.PowerToys -e`.
+- During Windows offload runs, the script temporarily sets standby timeout to 0 via `powercfg` and restores it at the end for headless sleep prevention.
 - The script does not keep any files on the Windows machine after completion.
 - When multiple roots are provided, the script hashes `unprocessed/` files and symlinks missing stems to matching stems from other roots (saves time + disk).
 

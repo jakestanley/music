@@ -469,6 +469,11 @@ run_windows() {
     echo "Invalid WINDOWS_AWAKE_MINUTES: $windows_awake_minutes (expected integer >= 1)" >&2
     exit 1
   fi
+  local windows_sleep_prompt_timeout="${WINDOWS_SLEEP_PROMPT_TIMEOUT:-120}"
+  if ! [[ "$windows_sleep_prompt_timeout" =~ ^[0-9]+$ ]] || [ "$windows_sleep_prompt_timeout" -lt 1 ]; then
+    echo "Invalid WINDOWS_SLEEP_PROMPT_TIMEOUT: $windows_sleep_prompt_timeout (expected integer >= 1)" >&2
+    exit 1
+  fi
   local windows_python="${WINDOWS_PYTHON:-python}"
   local windows_gpu_max_temp="${WINDOWS_GPU_MAX_TEMP:-80}"
   local windows_gpu_resume_temp="${WINDOWS_GPU_RESUME_TEMP:-70}"
@@ -480,6 +485,26 @@ run_windows() {
 
   local ssh_cmd=(ssh -i "$WINDOWS_SSH_KEY" "$WINDOWS_SSH_TARGET")
   local scp_cmd=(scp -i "$WINDOWS_SSH_KEY")
+
+  ps_escape() {
+    local s="$1"
+    s="${s//\'/\'\'}"
+    printf '%s' "$s"
+  }
+
+  ps_array_from_list() {
+    local out=""
+    local item
+    for item in "$@"; do
+      out+="'$(ps_escape "$item")',"
+    done
+    out="${out%,}"
+    if [ -z "$out" ]; then
+      printf '@()'
+    else
+      printf '@(%s)' "$out"
+    fi
+  }
 
   win_ps() {
     local cmd="$1"
@@ -524,16 +549,19 @@ run_windows() {
   local awake_exe=""
   local awake_reset_done=0
   local did_prompt_sleep=0
+  local sleep_scheme_guid=""
+  local sleep_timeout_ac=""
+  local sleep_timeout_dc=""
 
   prompt_windows_sleep() {
     if [ "${should_sleep-0}" -eq 1 ] && [ -n "${device_id-}" ] && [ -n "${token-}" ]; then
       if [ -r /dev/tty ] && [ -t 0 ]; then
-        if read -r -t 120 -p "Press Enter to skip Windows sleep (auto-sleep in 120s): " _ </dev/tty; then
+        if read -r -t "$windows_sleep_prompt_timeout" -p "Press Enter to skip Windows sleep (auto-sleep in ${windows_sleep_prompt_timeout}s): " _ </dev/tty; then
           echo "Skipping Windows sleep."
           return 0
         fi
       else
-        if read -r -t 120 -p "Press Enter to skip Windows sleep (auto-sleep in 120s): " _; then
+        if read -r -t "$windows_sleep_prompt_timeout" -p "Press Enter to skip Windows sleep (auto-sleep in ${windows_sleep_prompt_timeout}s): " _; then
           echo "Skipping Windows sleep."
           return 0
         fi
@@ -552,13 +580,34 @@ run_windows() {
     fi
   }
 
+  prevent_windows_sleep() {
+    local info
+    info="$(win_ps "\$scheme = (powercfg /getactivescheme) -match 'GUID:\\s+([a-fA-F0-9-]+)' | ForEach-Object { \$matches[1] }; if (-not \$scheme) { exit 0 }; \$raw = powercfg /query \$scheme SUB_SLEEP STANDBYIDLE; \$ac = (\$raw | Select-String -Pattern 'Current AC Power Setting Index:\\s+0x([0-9a-fA-F]+)' | ForEach-Object { [Convert]::ToInt32(\$_.Matches[0].Groups[1].Value,16) })[0]; \$dc = (\$raw | Select-String -Pattern 'Current DC Power Setting Index:\\s+0x([0-9a-fA-F]+)' | ForEach-Object { [Convert]::ToInt32(\$_.Matches[0].Groups[1].Value,16) })[0]; Write-Output (\$scheme + [char]9 + \$ac + [char]9 + \$dc)")"
+    info="${info//$'\r'/}"
+    if [ -n "$info" ]; then
+      IFS=$'\t' read -r sleep_scheme_guid sleep_timeout_ac sleep_timeout_dc <<<"$info"
+      if [ -n "$sleep_scheme_guid" ]; then
+        echo "Disabling Windows sleep (powercfg standby timeout set to 0)."
+        win_ps "powercfg /setacvalueindex $sleep_scheme_guid SUB_SLEEP STANDBYIDLE 0; powercfg /setdcvalueindex $sleep_scheme_guid SUB_SLEEP STANDBYIDLE 0; powercfg /setactive $sleep_scheme_guid" >/dev/null 2>&1 || true
+      fi
+    fi
+  }
+
+  restore_windows_sleep() {
+    if [ -n "${sleep_scheme_guid-}" ] && [ -n "${sleep_timeout_ac-}" ] && [ -n "${sleep_timeout_dc-}" ]; then
+      echo "Restoring Windows sleep timeouts."
+      win_ps "powercfg /setacvalueindex $sleep_scheme_guid SUB_SLEEP STANDBYIDLE $sleep_timeout_ac; powercfg /setdcvalueindex $sleep_scheme_guid SUB_SLEEP STANDBYIDLE $sleep_timeout_dc; powercfg /setactive $sleep_scheme_guid" >/dev/null 2>&1 || true
+    fi
+  }
+
   cleanup() {
     set +e
     if [ -n "${win_tmp-}" ]; then
       win_ps "Remove-Item -Recurse -Force '$win_tmp'" >/dev/null 2>&1
     fi
     reset_awake
-    if [ "$did_prompt_sleep" -eq 0 ]; then
+    restore_windows_sleep
+    if [ "${did_prompt_sleep-0}" -eq 0 ]; then
       prompt_windows_sleep
       did_prompt_sleep=1
     fi
@@ -566,6 +615,7 @@ run_windows() {
 
   trap cleanup EXIT
 
+  echo "Requesting UpSnap wake for Windows host..."
   curl -s "$UPSNAP_HOST/api/upsnap/wake/$device_id" -H "Authorization: Bearer $token" >/dev/null
   should_sleep=1
 
@@ -582,6 +632,7 @@ run_windows() {
     exit 1
   fi
   echo "Windows SSH connected."
+  prevent_windows_sleep
 
   if [ "$CLEAN_WINDOWS" -eq 1 ]; then
     win_ps "\$tmp = Join-Path \$env:TEMP 'demucs_tmp'; if (Test-Path \$tmp) { Get-ChildItem -Force \$tmp | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue; Remove-Item -Recurse -Force \$tmp -ErrorAction SilentlyContinue }" >/dev/null 2>&1 || true
@@ -625,13 +676,65 @@ run_windows() {
   while [ "$batch_start" -lt "${#missing_files[@]}" ]; do
     batch_index=$((batch_index + 1))
     local batch_files=("${missing_files[@]:batch_start:windows_batch_size}")
+    local batch_filtered=()
+    declare -A batch_local_sizes
+    local f name size
+    for f in "${batch_files[@]}"; do
+      size="$(file_size "$f")"
+      name="$(basename "$f")"
+      batch_local_sizes["$name"]="$size"
+      if [ "$size" -le 0 ]; then
+        echo "Warning: skipping zero-byte file: $f" >&2
+        continue
+      fi
+      batch_filtered+=("$f")
+    done
+    batch_files=("${batch_filtered[@]}")
     batch_start=$((batch_start + windows_batch_size))
 
     win_ps "Get-ChildItem -Path '$win_input_ps' -Filter '*.mp3' -File | Remove-Item -Force" >/dev/null 2>&1 || true
 
+    if [ "${#batch_files[@]}" -eq 0 ]; then
+      echo "Batch $batch_index/$total_batches: no valid files to upload."
+      continue
+    fi
+
     echo "Batch $batch_index/$total_batches: uploading ${#batch_files[@]} files..."
     "${scp_cmd[@]}" -r "${batch_files[@]}" "${WINDOWS_SSH_TARGET}:$win_input_scp/"
     echo "Batch $batch_index/$total_batches: upload complete."
+
+    local batch_names=()
+    for f in "${batch_files[@]}"; do
+      batch_names+=("$(basename "$f")")
+    done
+    local name_array_ps
+    name_array_ps="$(ps_array_from_list "${batch_names[@]}")"
+    local size_report
+    size_report="$(win_ps "\$names = $name_array_ps; foreach (\$n in \$names) { \$p = Join-Path '$win_input_ps' \$n; if (Test-Path \$p) { \$len = (Get-Item \$p).Length } else { \$len = -1 }; Write-Output (\$n + [char]9 + \$len) }")"
+    size_report="${size_report//$'\r'/}"
+    local reupload=()
+    while IFS=$'\t' read -r name remote_size; do
+      [ -n "$name" ] || continue
+      local_size="${batch_local_sizes[$name]:-}"
+      if [ -z "$local_size" ] || [ "$remote_size" -lt 0 ] || [ "$remote_size" -ne "$local_size" ]; then
+        reupload+=("$name")
+      fi
+    done <<<"$size_report"
+    if [ "${#reupload[@]}" -gt 0 ]; then
+      echo "Batch $batch_index/$total_batches: re-uploading ${#reupload[@]} files with size mismatch..."
+      local reupload_files=()
+      for name in "${reupload[@]}"; do
+        for f in "${batch_files[@]}"; do
+          if [ "$(basename "$f")" = "$name" ]; then
+            reupload_files+=("$f")
+            break
+          fi
+        done
+      done
+      if [ "${#reupload_files[@]}" -gt 0 ]; then
+        "${scp_cmd[@]}" -r "${reupload_files[@]}" "${WINDOWS_SSH_TARGET}:$win_input_scp/"
+      fi
+    fi
 
     local awake_path
     awake_path="$(win_ps "\$awake = @((Join-Path \$env:ProgramFiles 'PowerToys\\PowerToys.Awake.exe'), (Join-Path \$env:LOCALAPPDATA 'PowerToys\\PowerToys.Awake.exe')) | Where-Object { Test-Path \$_ } | Select-Object -First 1; if (\$awake) { Write-Output \$awake }")"
