@@ -459,6 +459,11 @@ run_windows() {
   if [ -n "$demucs_device" ]; then
     demucs_device_arg=(--device "$demucs_device")
   fi
+  local windows_batch_size="${WINDOWS_BATCH_SIZE:-10}"
+  if ! [[ "$windows_batch_size" =~ ^[0-9]+$ ]] || [ "$windows_batch_size" -lt 1 ]; then
+    echo "Invalid WINDOWS_BATCH_SIZE: $windows_batch_size (expected integer >= 1)" >&2
+    exit 1
+  fi
   local windows_python="${WINDOWS_PYTHON:-python}"
   local windows_gpu_max_temp="${WINDOWS_GPU_MAX_TEMP:-80}"
   local windows_gpu_resume_temp="${WINDOWS_GPU_RESUME_TEMP:-70}"
@@ -586,59 +591,70 @@ run_windows() {
     fi
   fi
 
-  echo "Uploading ${#missing_files[@]} files to Windows temp..."
-  "${scp_cmd[@]}" -r "${missing_files[@]}" "${WINDOWS_SSH_TARGET}:$win_input_scp/"
-  echo "Upload complete."
-
-  if [[ "$MODE" == "4" || "$MODE" == "both" ]]; then
-    echo "Running Windows 4-stem separation..."
-    win_ps "\$env:PYTHONUTF8='1'; \$env:PYTHONIOENCODING='utf-8'; \$maxTemp=$windows_gpu_max_temp; \$resumeTemp=$windows_gpu_resume_temp; function Get-GpuTemp { [int](nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits | Select-Object -First 1) }; function Wait-ForCool { while ((Get-GpuTemp) -gt \$resumeTemp) { Write-Host \"GPU hot (\$(Get-GpuTemp))C, waiting to cool to \$resumeTemp C\"; Start-Sleep -Seconds 10 } }; \$files = Get-ChildItem -Path '$win_input_ps' -Filter '*.mp3' -File | ForEach-Object { \$_.FullName }; if (\$files.Count -eq 0) { Write-Error 'No MP3 files found in Windows input folder'; exit 1 } ; foreach (\$f in \$files) { if ((Get-GpuTemp) -gt \$maxTemp) { Wait-ForCool }; demucs ${demucs_device_arg[*]} -n $DEMUCS_MODEL -o '$win_out4_ps' \"\$f\" }"
-  fi
-
-  if [[ "$MODE" == "2" || "$MODE" == "both" ]]; then
-    echo "Running Windows 2-stem separation..."
-    win_ps "\$env:PYTHONUTF8='1'; \$env:PYTHONIOENCODING='utf-8'; \$maxTemp=$windows_gpu_max_temp; \$resumeTemp=$windows_gpu_resume_temp; function Get-GpuTemp { [int](nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits | Select-Object -First 1) }; function Wait-ForCool { while ((Get-GpuTemp) -gt \$resumeTemp) { Write-Host \"GPU hot (\$(Get-GpuTemp))C, waiting to cool to \$resumeTemp C\"; Start-Sleep -Seconds 10 } }; \$files = Get-ChildItem -Path '$win_input_ps' -Filter '*.mp3' -File | ForEach-Object { \$_.FullName }; if (\$files.Count -eq 0) { Write-Error 'No MP3 files found in Windows input folder'; exit 1 } ; foreach (\$f in \$files) { if ((Get-GpuTemp) -gt \$maxTemp) { Wait-ForCool }; demucs ${demucs_device_arg[*]} -n $DEMUCS_MODEL --two-stems=vocals -o '$win_out2_ps' \"\$f\" }"
-  fi
-
   mkdir -p "$ALL_DIR" "$VOCALS_DIR"
 
-  if [[ "$MODE" == "4" || "$MODE" == "both" ]]; then
-    "${scp_cmd[@]}" -r "${WINDOWS_SSH_TARGET}:$win_out4_scp/htdemucs" "$ALL_DIR/"
-    if [ -d "$ALL_DIR/htdemucs" ]; then
-      if compgen -G "$ALL_DIR/htdemucs/*" >/dev/null; then
-        for src_dir in "$ALL_DIR"/htdemucs/*; do
-          [ -d "$src_dir" ] || continue
-          dest_dir="$ALL_DIR/$(basename "$src_dir")"
-          if [ -d "$dest_dir" ]; then
-            cp -a "$src_dir/." "$dest_dir/"
-            rm -rf "$src_dir"
-          else
-            mv "$src_dir" "$dest_dir"
-          fi
-        done
-      fi
-      rmdir "$ALL_DIR/htdemucs" 2>/dev/null || true
-    fi
-  fi
+  local total_batches=$(((${#missing_files[@]} + windows_batch_size - 1) / windows_batch_size))
+  local batch_index=0
+  local batch_start=0
+  while [ "$batch_start" -lt "${#missing_files[@]}" ]; do
+    batch_index=$((batch_index + 1))
+    local batch_files=("${missing_files[@]:batch_start:windows_batch_size}")
+    batch_start=$((batch_start + windows_batch_size))
 
-  if [[ "$MODE" == "2" || "$MODE" == "both" ]]; then
-    "${scp_cmd[@]}" -r "${WINDOWS_SSH_TARGET}:$win_out2_scp/htdemucs" "$VOCALS_DIR/"
-    if [ -d "$VOCALS_DIR/htdemucs" ]; then
-      if compgen -G "$VOCALS_DIR/htdemucs/*" >/dev/null; then
-        for src_dir in "$VOCALS_DIR"/htdemucs/*; do
-          [ -d "$src_dir" ] || continue
-          dest_dir="$VOCALS_DIR/$(basename "$src_dir")"
-          if [ -d "$dest_dir" ]; then
-            cp -a "$src_dir/." "$dest_dir/"
-            rm -rf "$src_dir"
-          else
-            mv "$src_dir" "$dest_dir"
-          fi
-        done
-      fi
-      rmdir "$VOCALS_DIR/htdemucs" 2>/dev/null || true
+    win_ps "Get-ChildItem -Path '$win_input_ps' -Filter '*.mp3' -File | Remove-Item -Force" >/dev/null 2>&1 || true
+
+    echo "Batch $batch_index/$total_batches: uploading ${#batch_files[@]} files..."
+    "${scp_cmd[@]}" -r "${batch_files[@]}" "${WINDOWS_SSH_TARGET}:$win_input_scp/"
+    echo "Batch $batch_index/$total_batches: upload complete."
+
+    if [[ "$MODE" == "4" || "$MODE" == "both" ]]; then
+      echo "Batch $batch_index/$total_batches: running Windows 4-stem separation..."
+      win_ps "\$env:PYTHONUTF8='1'; \$env:PYTHONIOENCODING='utf-8'; \$maxTemp=$windows_gpu_max_temp; \$resumeTemp=$windows_gpu_resume_temp; function Get-GpuTemp { [int](nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits | Select-Object -First 1) }; function Wait-ForCool { while ((Get-GpuTemp) -gt \$resumeTemp) { Write-Host \"GPU hot (\$(Get-GpuTemp))C, waiting to cool to \$resumeTemp C\"; Start-Sleep -Seconds 10 } }; \$files = Get-ChildItem -Path '$win_input_ps' -Filter '*.mp3' -File | ForEach-Object { \$_.FullName }; if (\$files.Count -eq 0) { Write-Error 'No MP3 files found in Windows input folder'; exit 1 } ; foreach (\$f in \$files) { if ((Get-GpuTemp) -gt \$maxTemp) { Wait-ForCool }; demucs ${demucs_device_arg[*]} -n $DEMUCS_MODEL -o '$win_out4_ps' \"\$f\" }"
     fi
-  fi
+
+    if [[ "$MODE" == "2" || "$MODE" == "both" ]]; then
+      echo "Batch $batch_index/$total_batches: running Windows 2-stem separation..."
+      win_ps "\$env:PYTHONUTF8='1'; \$env:PYTHONIOENCODING='utf-8'; \$maxTemp=$windows_gpu_max_temp; \$resumeTemp=$windows_gpu_resume_temp; function Get-GpuTemp { [int](nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits | Select-Object -First 1) }; function Wait-ForCool { while ((Get-GpuTemp) -gt \$resumeTemp) { Write-Host \"GPU hot (\$(Get-GpuTemp))C, waiting to cool to \$resumeTemp C\"; Start-Sleep -Seconds 10 } }; \$files = Get-ChildItem -Path '$win_input_ps' -Filter '*.mp3' -File | ForEach-Object { \$_.FullName }; if (\$files.Count -eq 0) { Write-Error 'No MP3 files found in Windows input folder'; exit 1 } ; foreach (\$f in \$files) { if ((Get-GpuTemp) -gt \$maxTemp) { Wait-ForCool }; demucs ${demucs_device_arg[*]} -n $DEMUCS_MODEL --two-stems=vocals -o '$win_out2_ps' \"\$f\" }"
+    fi
+
+    if [[ "$MODE" == "4" || "$MODE" == "both" ]]; then
+      "${scp_cmd[@]}" -r "${WINDOWS_SSH_TARGET}:$win_out4_scp/htdemucs" "$ALL_DIR/"
+      if [ -d "$ALL_DIR/htdemucs" ]; then
+        if compgen -G "$ALL_DIR/htdemucs/*" >/dev/null; then
+          for src_dir in "$ALL_DIR"/htdemucs/*; do
+            [ -d "$src_dir" ] || continue
+            dest_dir="$ALL_DIR/$(basename "$src_dir")"
+            if [ -d "$dest_dir" ]; then
+              cp -a "$src_dir/." "$dest_dir/"
+              rm -rf "$src_dir"
+            else
+              mv "$src_dir" "$dest_dir"
+            fi
+          done
+        fi
+        rmdir "$ALL_DIR/htdemucs" 2>/dev/null || true
+      fi
+    fi
+
+    if [[ "$MODE" == "2" || "$MODE" == "both" ]]; then
+      "${scp_cmd[@]}" -r "${WINDOWS_SSH_TARGET}:$win_out2_scp/htdemucs" "$VOCALS_DIR/"
+      if [ -d "$VOCALS_DIR/htdemucs" ]; then
+        if compgen -G "$VOCALS_DIR/htdemucs/*" >/dev/null; then
+          for src_dir in "$VOCALS_DIR"/htdemucs/*; do
+            [ -d "$src_dir" ] || continue
+            dest_dir="$VOCALS_DIR/$(basename "$src_dir")"
+            if [ -d "$dest_dir" ]; then
+              cp -a "$src_dir/." "$dest_dir/"
+              rm -rf "$src_dir"
+            else
+              mv "$src_dir" "$dest_dir"
+            fi
+          done
+        fi
+        rmdir "$VOCALS_DIR/htdemucs" 2>/dev/null || true
+      fi
+    fi
+  done
 }
 
 build_hash_index
