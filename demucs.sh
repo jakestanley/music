@@ -521,25 +521,46 @@ run_windows() {
 
   local should_sleep=0
   local win_tmp=""
+  local awake_exe=""
+  local awake_reset_done=0
+  local did_prompt_sleep=0
+
+  prompt_windows_sleep() {
+    if [ "${should_sleep-0}" -eq 1 ] && [ -n "${device_id-}" ] && [ -n "${token-}" ]; then
+      if [ -r /dev/tty ] && [ -t 0 ]; then
+        if read -r -t 120 -p "Press Enter to skip Windows sleep (auto-sleep in 120s): " _ </dev/tty; then
+          echo "Skipping Windows sleep."
+          return 0
+        fi
+      else
+        if read -r -t 120 -p "Press Enter to skip Windows sleep (auto-sleep in 120s): " _; then
+          echo "Skipping Windows sleep."
+          return 0
+        fi
+      fi
+      curl -s "$UPSNAP_HOST/api/upsnap/shutdown/$device_id" -H "Authorization: Bearer $token" >/dev/null 2>&1
+      return 0
+    fi
+    return 1
+  }
+
+  reset_awake() {
+    if [ -n "${awake_exe-}" ] && [ "$awake_reset_done" -eq 0 ]; then
+      echo "Resetting PowerToys Awake to passive mode."
+      win_ps "Start-Process -FilePath '$awake_exe' -ArgumentList '--mode passive' -WindowStyle Hidden" >/dev/null 2>&1 || true
+      awake_reset_done=1
+    fi
+  }
 
   cleanup() {
     set +e
     if [ -n "${win_tmp-}" ]; then
       win_ps "Remove-Item -Recurse -Force '$win_tmp'" >/dev/null 2>&1
     fi
-    if [ "${should_sleep-0}" -eq 1 ] && [ -n "${device_id-}" ] && [ -n "${token-}" ]; then
-      if [ -r /dev/tty ] && [ -t 0 ]; then
-        if read -r -t 120 -p "Press Enter to skip Windows sleep (auto-sleep in 120s): " _ </dev/tty; then
-          echo "Skipping Windows sleep."
-          return
-        fi
-      else
-        if read -r -t 120 -p "Press Enter to skip Windows sleep (auto-sleep in 120s): " _; then
-          echo "Skipping Windows sleep."
-          return
-        fi
-      fi
-      curl -s "$UPSNAP_HOST/api/upsnap/shutdown/$device_id" -H "Authorization: Bearer $token" >/dev/null 2>&1
+    reset_awake
+    if [ "$did_prompt_sleep" -eq 0 ]; then
+      prompt_windows_sleep
+      did_prompt_sleep=1
     fi
   }
 
@@ -616,6 +637,7 @@ run_windows() {
     awake_path="$(win_ps "\$awake = @((Join-Path \$env:ProgramFiles 'PowerToys\\PowerToys.Awake.exe'), (Join-Path \$env:LOCALAPPDATA 'PowerToys\\PowerToys.Awake.exe')) | Where-Object { Test-Path \$_ } | Select-Object -First 1; if (\$awake) { Write-Output \$awake }")"
     awake_path="${awake_path//$'\r'/}"
     if [ -n "$awake_path" ]; then
+      awake_exe="$awake_path"
       echo "Batch $batch_index/$total_batches: PowerToys Awake for ${windows_awake_minutes} minutes."
       win_ps "Start-Process -FilePath '$awake_path' -ArgumentList '--mode timed --time $((windows_awake_minutes * 60))' -WindowStyle Hidden" >/dev/null 2>&1 || true
     else
@@ -670,6 +692,12 @@ run_windows() {
       fi
     fi
   done
+
+  reset_awake
+  if [ "$did_prompt_sleep" -eq 0 ]; then
+    prompt_windows_sleep
+    did_prompt_sleep=1
+  fi
 }
 
 build_hash_index
