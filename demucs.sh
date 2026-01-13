@@ -464,6 +464,11 @@ run_windows() {
     echo "Invalid WINDOWS_BATCH_SIZE: $windows_batch_size (expected integer >= 1)" >&2
     exit 1
   fi
+  local windows_awake_minutes="${WINDOWS_AWAKE_MINUTES:-10}"
+  if ! [[ "$windows_awake_minutes" =~ ^[0-9]+$ ]] || [ "$windows_awake_minutes" -lt 1 ]; then
+    echo "Invalid WINDOWS_AWAKE_MINUTES: $windows_awake_minutes (expected integer >= 1)" >&2
+    exit 1
+  fi
   local windows_python="${WINDOWS_PYTHON:-python}"
   local windows_gpu_max_temp="${WINDOWS_GPU_MAX_TEMP:-80}"
   local windows_gpu_resume_temp="${WINDOWS_GPU_RESUME_TEMP:-70}"
@@ -558,7 +563,7 @@ run_windows() {
   echo "Windows SSH connected."
 
   if [ "$CLEAN_WINDOWS" -eq 1 ]; then
-    win_ps "\$tmp = Join-Path \$env:TEMP 'demucs_tmp'; if (Test-Path \$tmp) { Remove-Item -Recurse -Force \$tmp }"
+    win_ps "\$tmp = Join-Path \$env:TEMP 'demucs_tmp'; if (Test-Path \$tmp) { Get-ChildItem -Force \$tmp | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue; Remove-Item -Recurse -Force \$tmp -ErrorAction SilentlyContinue }" >/dev/null 2>&1 || true
   fi
 
   win_tmp="$(win_ps "\$tmp = Join-Path \$env:TEMP 'demucs_tmp'; New-Item -ItemType Directory -Path \$tmp -Force | Out-Null; Write-Output \$tmp")"
@@ -606,6 +611,16 @@ run_windows() {
     echo "Batch $batch_index/$total_batches: uploading ${#batch_files[@]} files..."
     "${scp_cmd[@]}" -r "${batch_files[@]}" "${WINDOWS_SSH_TARGET}:$win_input_scp/"
     echo "Batch $batch_index/$total_batches: upload complete."
+
+    local awake_path
+    awake_path="$(win_ps "\$awake = @((Join-Path \$env:ProgramFiles 'PowerToys\\PowerToys.Awake.exe'), (Join-Path \$env:LOCALAPPDATA 'PowerToys\\PowerToys.Awake.exe')) | Where-Object { Test-Path \$_ } | Select-Object -First 1; if (\$awake) { Write-Output \$awake }")"
+    awake_path="${awake_path//$'\r'/}"
+    if [ -n "$awake_path" ]; then
+      echo "Batch $batch_index/$total_batches: PowerToys Awake for ${windows_awake_minutes} minutes."
+      win_ps "Start-Process -FilePath '$awake_path' -ArgumentList '--mode timed --time $((windows_awake_minutes * 60))' -WindowStyle Hidden" >/dev/null 2>&1 || true
+    else
+      echo "Warning: PowerToys Awake not found on Windows host; sleep may interrupt batch $batch_index/$total_batches." >&2
+    fi
 
     if [[ "$MODE" == "4" || "$MODE" == "both" ]]; then
       echo "Batch $batch_index/$total_batches: running Windows 4-stem separation..."
