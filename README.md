@@ -100,7 +100,7 @@ NFS note: I keep a mount on the Mac that points to the server's `Music/Playlists
 2) Scrape playlist metadata into each root: `python3 scraper.py --manifest manifest.json` (writes `<root>/playlist.json`).
 3) Convert scraped JSON into spotdl inputs: `python3 convert.py --manifest manifest.json` (writes `<root>/playlist.sync.spotdl` and `<root>/playlist.download.spotdl`).
 4) Download audio: `./spotdl.sh --manifest manifest.json` (prefers `<root>/playlist.download.spotdl` to avoid Spotify playlist sync calls; falls back to sync when missing).
-5) Fallback any spotdl failures with yt-dlp search: `python3 ytdlp_fallback.py --manifest manifest.json` (uses `<root>/spotdl.errors.json` written by step 4).
+5) Fallback any spotdl failures with yt-dlp search: `python3 ytdlp_fallback.py --manifest manifest.json` (uses `<root>/spotdl.errors.json` written by step 4; logs any remaining failures to `<root>/ytdlp_fallback.errors.jsonl`; use `--truncate-log` to reset the log each run).
 
 ## `spotdl.sh`
 

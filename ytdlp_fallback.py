@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
 import json
 import re
 import shlex
@@ -134,13 +135,15 @@ def song_query(song: dict[str, Any]) -> str:
 
 def run_ytdlp_search_download(
     query: str, output_dir: Path, audio_format: str, dry_run: bool
-) -> int:
+) -> tuple[int, list[str], str, str]:
     output_dir.mkdir(parents=True, exist_ok=True)
     cmd = [
         "yt-dlp",
         "--no-playlist",
         "--default-search",
         "ytsearch1",
+        "--print",
+        "after_move:filepath",
         "-x",
         "--audio-format",
         audio_format,
@@ -150,9 +153,70 @@ def run_ytdlp_search_download(
     ]
     log(f"Running: {shlex.join(cmd)}")
     if dry_run:
-        return 0
-    result = subprocess.run(cmd)
-    return result.returncode
+        return 0, cmd, "", ""
+    result = subprocess.run(cmd, text=True, capture_output=True)
+    return result.returncode, cmd, result.stdout or "", result.stderr or ""
+
+
+def utc_now_iso() -> str:
+    return _dt.datetime.now(tz=_dt.timezone.utc).isoformat()
+
+
+def tail(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[-limit:]
+
+
+def append_jsonl(path: Path, record: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        json.dump(record, handle, ensure_ascii=False)
+        handle.write("\n")
+
+def extract_existing_filepaths(text: str) -> list[str]:
+    paths: list[str] = []
+    for line in (text or "").splitlines():
+        candidate = line.strip()
+        if not candidate:
+            continue
+        try:
+            p = Path(candidate)
+        except Exception:
+            continue
+        if p.is_file():
+            paths.append(str(p))
+    return paths
+
+
+def load_success_index(path: Path) -> dict[str, list[str]]:
+    """
+    Returns spotify_track_id -> list of filepaths that existed at log time.
+    """
+    index: dict[str, list[str]] = {}
+    if not path.is_file():
+        return index
+
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        track_id = rec.get("spotify_track_id")
+        if not isinstance(track_id, str) or not track_id.strip():
+            continue
+        filepaths = rec.get("filepaths")
+        if not isinstance(filepaths, list):
+            continue
+        existing = [fp for fp in filepaths if isinstance(fp, str) and Path(fp).is_file()]
+        if existing:
+            index[track_id.strip()] = existing
+    return index
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -178,6 +242,21 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--audio-format",
         default="mp3",
         help="Audio format for yt-dlp extraction (default: mp3).",
+    )
+    parser.add_argument(
+        "--log-name",
+        default="ytdlp_fallback.errors.jsonl",
+        help="Filename under each playlist root to log remaining failures (default: ytdlp_fallback.errors.jsonl).",
+    )
+    parser.add_argument(
+        "--success-log-name",
+        default="ytdlp_fallback.success.jsonl",
+        help="Filename under each playlist root to log successful yt-dlp fallbacks (default: ytdlp_fallback.success.jsonl).",
+    )
+    parser.add_argument(
+        "--truncate-log",
+        action="store_true",
+        help="Truncate the per-root fallback log before writing new failures.",
     )
     parser.add_argument(
         "--dry-run",
@@ -247,16 +326,80 @@ def main(argv: list[str]) -> int:
             continue
 
         log(f"Fallback: {root} ({len(targets)} songs)")
+        fallback_log_path = (root / args.log_name).resolve()
+        success_log_path = (root / args.success_log_name).resolve()
+        success_index = load_success_index(success_log_path)
+        if not args.dry_run and args.truncate_log:
+            try:
+                fallback_log_path.write_text("", encoding="utf-8")
+            except Exception as exc:
+                log(f"ERROR: failed to truncate fallback log {fallback_log_path}: {exc}")
+                overall_exit = 1
+
+        logged_path_notice = False
         for song in targets:
+            spotify_track_id = song.get("song_id")
+            if (
+                isinstance(spotify_track_id, str)
+                and spotify_track_id.strip()
+                and spotify_track_id.strip() in success_index
+            ):
+                log(
+                    f"Skipping (already downloaded): https://open.spotify.com/track/{spotify_track_id.strip()}"
+                )
+                continue
+
             query = song_query(song)
-            code = run_ytdlp_search_download(
+            code, cmd, stdout, stderr = run_ytdlp_search_download(
                 query=query,
                 output_dir=output_dir,
                 audio_format=args.audio_format,
                 dry_run=args.dry_run,
             )
             if code != 0:
+                if not args.dry_run:
+                    if not logged_path_notice:
+                        log(f"Logging yt-dlp failures to: {fallback_log_path}")
+                        logged_path_notice = True
+                    try:
+                        append_jsonl(
+                            fallback_log_path,
+                            {
+                                "timestamp": utc_now_iso(),
+                                "spotify_track_id": song.get("song_id"),
+                                "spotify_track_url": song.get("url"),
+                                "query": query,
+                                "yt_dlp_command": cmd,
+                                "exit_code": code,
+                                "stderr_tail": tail(stderr, 4000),
+                                "stdout_tail": tail(stdout, 2000),
+                            },
+                        )
+                    except Exception as exc:
+                        log(f"ERROR: failed to write fallback log {fallback_log_path}: {exc}")
+                log(f"ERROR: yt-dlp failed for: {query}")
                 overall_exit = 1
+            else:
+                if not args.dry_run:
+                    filepaths = extract_existing_filepaths(stdout)
+                    if filepaths:
+                        try:
+                            append_jsonl(
+                                success_log_path,
+                                {
+                                    "timestamp": utc_now_iso(),
+                                    "spotify_track_id": song.get("song_id"),
+                                    "spotify_track_url": song.get("url"),
+                                    "query": query,
+                                    "yt_dlp_command": cmd,
+                                    "filepaths": filepaths,
+                                },
+                            )
+                            if isinstance(spotify_track_id, str) and spotify_track_id.strip():
+                                success_index[spotify_track_id.strip()] = filepaths
+                        except Exception as exc:
+                            log(f"ERROR: failed to write success log {success_log_path}: {exc}")
+                            overall_exit = 1
 
     return overall_exit
 
