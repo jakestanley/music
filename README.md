@@ -29,6 +29,18 @@ git checkout main
 find . -type l | sed -e s'/^\.\///g' >> .gitignore
 ```
 
+## Synchronising unprocessed files from server
+
+```bash
+rsync -av --delete \
+  --prune-empty-dirs \
+  --exclude='._*' \
+  --include='*/' \
+  --include='*/unprocessed/***' \
+  --exclude='*' \
+  jake@adler:~/Music/Playlists/  ~/Music/Playlists/
+```
+
 ## Expected folder structure
 
 The scripts assume a root directory per project or playlist. Each root contains an `unprocessed/` folder with source MP3s, plus output folders for Demucs stems:
