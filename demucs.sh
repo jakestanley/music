@@ -483,28 +483,8 @@ run_windows() {
     return 0
   fi
 
-  local ssh_cmd=(ssh -i "$WINDOWS_SSH_KEY" "$WINDOWS_SSH_TARGET")
-  local scp_cmd=(scp -i "$WINDOWS_SSH_KEY")
-
-  ps_escape() {
-    local s="$1"
-    s="${s//\'/\'\'}"
-    printf '%s' "$s"
-  }
-
-  ps_array_from_list() {
-    local out=""
-    local item
-    for item in "$@"; do
-      out+="'$(ps_escape "$item")',"
-    done
-    out="${out%,}"
-    if [ -z "$out" ]; then
-      printf '@()'
-    else
-      printf '@(%s)' "$out"
-    fi
-  }
+  local ssh_cmd=(ssh -i "$WINDOWS_SSH_KEY" -o ServerAliveInterval=30 -o ServerAliveCountMax=6 "$WINDOWS_SSH_TARGET")
+  local scp_cmd=(scp -i "$WINDOWS_SSH_KEY" -o ServerAliveInterval=30 -o ServerAliveCountMax=6)
 
   win_ps() {
     local cmd="$1"
@@ -645,6 +625,7 @@ run_windows() {
     echo "Failed to resolve Windows temp path" >&2
     exit 1
   fi
+  echo "Windows temp directory: $win_tmp"
   local win_tmp_scp="${win_tmp//\\//}"
   if [[ "$win_tmp_scp" =~ ^[A-Za-z]:/ ]]; then
     win_tmp_scp="/$win_tmp_scp"
@@ -678,18 +659,18 @@ run_windows() {
     batch_index=$((batch_index + 1))
     local batch_files=("${missing_files[@]:batch_start:windows_batch_size}")
     local batch_filtered=()
-    declare -A batch_local_sizes
-    local f name size
-    for f in "${batch_files[@]}"; do
-      size="$(file_size "$f")"
-      name="$(basename "$f")"
-      batch_local_sizes["$name"]="$size"
-      if [ "$size" -le 0 ]; then
-        echo "Warning: skipping zero-byte file: $f" >&2
-        continue
-      fi
-      batch_filtered+=("$f")
-    done
+	    declare -A batch_local_sizes
+	    local f name size
+	    for f in "${batch_files[@]}"; do
+	      size="$(file_size "$f")"
+	      name="$(basename "$f")"
+	      if [ "$size" -le 0 ]; then
+	        echo "Warning: skipping zero-byte file: $f" >&2
+	        continue
+	      fi
+	      batch_local_sizes["$name"]="$size"
+	      batch_filtered+=("$f")
+	    done
     batch_files=("${batch_filtered[@]}")
     batch_start=$((batch_start + windows_batch_size))
 
@@ -704,25 +685,24 @@ run_windows() {
     "${scp_cmd[@]}" -r "${batch_files[@]}" "${WINDOWS_SSH_TARGET}:$win_input_scp/"
     echo "Batch $batch_index/$total_batches: upload complete."
 
-    local batch_names=()
-    for f in "${batch_files[@]}"; do
-      batch_names+=("$(basename "$f")")
-    done
-    local name_array_ps
-    name_array_ps="$(ps_array_from_list "${batch_names[@]}")"
-    local size_report
-    size_report="$(win_ps "\$names = $name_array_ps; foreach (\$n in \$names) { \$p = Join-Path '$win_input_ps' \$n; if (Test-Path \$p) { \$len = (Get-Item \$p).Length } else { \$len = -1 }; Write-Output (\$n + [char]9 + \$len) }")"
-    size_report="${size_report//$'\r'/}"
-    local reupload=()
-    while IFS=$'\t' read -r name remote_size; do
-      [ -n "$name" ] || continue
-      local_size="${batch_local_sizes[$name]:-}"
-      if [ -z "$local_size" ] || [ "$remote_size" -lt 0 ] || [ "$remote_size" -ne "$local_size" ]; then
-        reupload+=("$name")
-      fi
-    done <<<"$size_report"
-    if [ "${#reupload[@]}" -gt 0 ]; then
-      echo "Batch $batch_index/$total_batches: re-uploading ${#reupload[@]} files with size mismatch..."
+	    local size_report
+	    size_report="$(win_ps "Get-ChildItem -Path '$win_input_ps' -Filter '*.mp3' -File | ForEach-Object { Write-Output (\$_.Name + [char]9 + \$_.Length) }")"
+	    size_report="${size_report//$'\r'/}"
+	    local reupload=()
+	    declare -A batch_remote_sizes
+	    while IFS=$'\t' read -r name remote_size; do
+	      [ -n "$name" ] || continue
+	      batch_remote_sizes["$name"]="$remote_size"
+	    done <<<"$size_report"
+	    for name in "${!batch_local_sizes[@]}"; do
+	      local_size="${batch_local_sizes[$name]}"
+	      remote_size="${batch_remote_sizes[$name]:--1}"
+	      if [ "$remote_size" -lt 0 ] || [ "$remote_size" -ne "$local_size" ]; then
+	        reupload+=("$name")
+	      fi
+	    done
+	    if [ "${#reupload[@]}" -gt 0 ]; then
+	      echo "Batch $batch_index/$total_batches: re-uploading ${#reupload[@]} files with size mismatch..."
       local reupload_files=()
       for name in "${reupload[@]}"; do
         for f in "${batch_files[@]}"; do
@@ -759,6 +739,7 @@ run_windows() {
     fi
 
     if [[ "$MODE" == "4" || "$MODE" == "both" ]]; then
+      echo "Batch $batch_index/$total_batches: copying Windows 4-stem outputs back..."
       "${scp_cmd[@]}" -r "${WINDOWS_SSH_TARGET}:$win_out4_scp/htdemucs" "$ALL_DIR/"
       if [ -d "$ALL_DIR/htdemucs" ]; then
         if compgen -G "$ALL_DIR/htdemucs/*" >/dev/null; then
@@ -778,6 +759,7 @@ run_windows() {
     fi
 
     if [[ "$MODE" == "2" || "$MODE" == "both" ]]; then
+      echo "Batch $batch_index/$total_batches: copying Windows 2-stem outputs back..."
       "${scp_cmd[@]}" -r "${WINDOWS_SSH_TARGET}:$win_out2_scp/htdemucs" "$VOCALS_DIR/"
       if [ -d "$VOCALS_DIR/htdemucs" ]; then
         if compgen -G "$VOCALS_DIR/htdemucs/*" >/dev/null; then
