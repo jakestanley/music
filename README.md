@@ -109,6 +109,9 @@ Usage:
 
 The script creates `<PLAYLIST_TARGET_DIR>/unprocessed`, switches into it, and runs `spotdl` for the supplied playlist.
 
+Setup:
+- Copy `.env.example` to `.env` and fill in `SPOTDL_CLIENT_ID` and `SPOTDL_CLIENT_SECRET`.
+
 ## `demucs.sh`
 
 Purpose: separate each MP3 in `<PLAYLIST_TARGET_DIR>/unprocessed` into Demucs outputs (a full 4-stem mix and/or a 2-stem vocal isolate). The script avoids re-running Demucs for tracks that already have the requested stems.
