@@ -94,6 +94,13 @@ Typical steps:
 
 NFS note: I keep a mount on the Mac that points to the server's `Music/Playlists/` so stems are immediately available without copying.
 
+## Usage (Rate-Limit Safe)
+
+1) Populate `manifest.json` with playlist roots and URLs (each `root` must already exist).
+2) Scrape playlist metadata into each root: `python3 scraper.py --manifest manifest.json` (writes `<root>/playlist.json`).
+3) Convert scraped JSON into spotdl inputs: `python3 convert.py --manifest manifest.json` (writes `<root>/playlist.sync.spotdl` and `<root>/playlist.download.spotdl`).
+4) Download audio: `./spotdl.sh --manifest manifest.json` (prefers `<root>/playlist.download.spotdl` to avoid Spotify playlist sync calls; falls back to sync when missing).
+
 ## `spotdl.sh`
 
 Purpose: keep a Spotify playlist mirrored into an `unprocessed/` folder ready for Demucs, without re-querying/downloading everything every run.
@@ -117,9 +124,9 @@ Options:
 | Option | Description |
 |--------|-------------|
 | `--sync-file <FILE>` | name/path under `<PLAYLIST_TARGET_DIR>/` for the sync state (default `playlist.sync.spotdl`) |
-| `--delay <SECONDS>` | sleep between playlist syncs (useful in `--manifest` mode to avoid 429s) |
+| `--delay <SECONDS>` | sleep between playlist syncs (default `2`; useful in `--manifest` mode to avoid 429s) |
 | `--threads <N>` | number of threads (defaults to `1`; increase if you want more concurrency) |
-| `--max-retries <N>` | increase retries/backoff for transient Spotify 429s |
+| `--max-retries <N>` | increase retries/backoff for transient Spotify 429s (default `5`) |
 
 Setup:
 - Copy `.env.example` to `.env` and fill in `SPOTDL_CLIENT_ID` and `SPOTDL_CLIENT_SECRET`.
@@ -127,6 +134,7 @@ Setup:
 Rate limit tips:
 - Prefer re-running `./spotdl.sh ...` over re-downloading from scratch; the sync file is what keeps API usage low.
 - If you still hit 429s, reduce concurrency with `--threads 1`, add `--delay 2` (or higher), and/or bump `--max-retries 20` so the built-in backoff has time to honor `Retry-After` and drain the limit.
+- The script aborts if spotdl requests a `Retry-After` greater than 60 seconds.
 
 Manifest mode:
 You can pass `--manifest <MANIFEST_FILE>` instead of positional arguments to download multiple playlists in one run. The manifest must be a JSON array (or single object) where each entry is an object that specifies a playlist URL (`playlist_url`, `playlistUrl`, `playlistURL`, or `url`) and a root path (`root`, `path`, `target_dir`, or `targetDir`). Example:
@@ -145,6 +153,42 @@ You can pass `--manifest <MANIFEST_FILE>` instead of positional arguments to dow
 ```
 
 Each root directory must exist before running `spotdl.sh` (the script keeps the `unprocessed/` subfolder it creates), and the playlist downloads run sequentially in manifest order.
+
+## `scraper.py`
+
+Purpose: generate a `playlist.json` for each playlist in `manifest.json` using `spotifyscraper`. The JSON is written into the playlist root directory (i.e., alongside `unprocessed/`).
+
+Usage:
+```
+python3 scraper.py --manifest manifest.json
+```
+
+Options:
+| Option | Description |
+|--------|-------------|
+| `--manifest <FILE>` | manifest JSON file path (default `manifest.json`) |
+| `--output-name <NAME>` | output filename under each playlist root (default `playlist.json`) |
+
+## `convert.py`
+
+Purpose: convert each scraped `playlist.json` (from `scraper.py`) into a `playlist.sync.spotdl` file that `spotdl sync` can consume later. This leaves `playlist.json` untouched and writes the sync file into the playlist root directory.
+
+Usage:
+```
+python3 convert.py --manifest manifest.json
+```
+
+Outputs:
+- `<PLAYLIST_ROOT>/playlist.sync.spotdl`: sync state for `spotdl sync` (will refetch playlist from Spotify).
+- `<PLAYLIST_ROOT>/playlist.download.spotdl`: a song-list file for `spotdl download` (avoids Spotify playlist sync calls).
+
+Options:
+| Option | Description |
+|--------|-------------|
+| `--manifest <FILE>` | manifest JSON file path (default `manifest.json`) |
+| `--playlist-json-name <NAME>` | filename to search for under each root (default `playlist.json`) |
+| `--sync-name <NAME>` | output filename under each root (default `playlist.sync.spotdl`) |
+| `--download-name <NAME>` | output filename under each root (default `playlist.download.spotdl`) |
 
 ## `demucs.sh`
 

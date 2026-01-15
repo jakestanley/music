@@ -202,6 +202,14 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     tmp_path.replace(path)
 
 
+def write_json_list(path: Path, items: list[dict[str, Any]]) -> None:
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    with tmp_path.open("w", encoding="utf-8") as handle:
+        json.dump(items, handle, indent=2, ensure_ascii=False)
+        handle.write("\n")
+    tmp_path.replace(path)
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Convert spotifyscraper playlist.json files into spotdl playlist.sync.spotdl files."
@@ -220,6 +228,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--sync-name",
         default="playlist.sync.spotdl",
         help="Output filename to write under each root (default: playlist.sync.spotdl).",
+    )
+    parser.add_argument(
+        "--download-name",
+        default="playlist.download.spotdl",
+        help="Output filename to write a song-list .spotdl under each root for `spotdl download` (default: playlist.download.spotdl).",
     )
     return parser.parse_args(argv)
 
@@ -276,6 +289,18 @@ def main(argv: list[str]) -> int:
             exit_code = 1
             errored += 1
             continue
+
+        download_path = (entry.root / args.download_name).resolve()
+        try:
+            songs = payload.get("songs")
+            if not isinstance(songs, list) or not all(isinstance(s, dict) for s in songs):
+                raise ValueError("payload.songs is not a list of song objects")
+            log(f"- Output: {download_path} (song list for `spotdl download`)")
+            write_json_list(download_path, songs)  # type: ignore[arg-type]
+        except Exception as exc:
+            log(f"ERROR: failed to write {download_path}: {exc}")
+            exit_code = 1
+            errored += 1
 
     skipped_msg = f", skipped {skipped}" if skipped else ""
     log(f"Done: wrote {written}{skipped_msg}, errors {errored}.")

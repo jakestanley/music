@@ -26,9 +26,11 @@ print_usage() {
 
 MANIFEST=""
 SYNC_FILE_NAME="playlist.sync.spotdl"
-DELAY_SECONDS="0"
-MAX_RETRIES=""
+DOWNLOAD_FILE_NAME="playlist.download.spotdl"
+DELAY_SECONDS="2"
+MAX_RETRIES="5"
 THREADS="1"
+MAX_RETRY_WAIT_SECONDS="60"
 POSITIONAL=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -155,6 +157,95 @@ done
 require_var SPOTDL_CLIENT_ID
 require_var SPOTDL_CLIENT_SECRET
 
+retry_wait_seconds_from_line() {
+  local line="$1"
+  local seconds=""
+
+  if [[ "$line" =~ [Rr]etry[-[:space:]]*After[^0-9]*([0-9]+) ]]; then
+    seconds="${BASH_REMATCH[1]}"
+  elif [[ "$line" =~ [Rr]etry[^0-9]*after[^0-9]*([0-9]+) ]]; then
+    seconds="${BASH_REMATCH[1]}"
+  elif [[ "$line" =~ occur[^0-9]*after[^0-9]*([0-9]+) ]]; then
+    seconds="${BASH_REMATCH[1]}"
+  elif [[ "$line" =~ [Rr]etry(ing)?[^0-9]*in[^0-9]*([0-9]+)[[:space:]]*(seconds|second|secs|sec|s)\b ]]; then
+    seconds="${BASH_REMATCH[2]}"
+  elif [[ "$line" =~ [Ww]ait[^0-9]*([0-9]+)[[:space:]]*(seconds|second|secs|sec|s)\b ]]; then
+    seconds="${BASH_REMATCH[1]}"
+  fi
+
+  if [ -n "$seconds" ]; then
+    printf '%s' "$seconds"
+    return 0
+  fi
+
+  return 1
+}
+
+run_spotdl_with_retry_wait_guard() {
+  local -a args=("$@")
+  printf 'Running: spotdl' >&2
+  local i=0
+  while [ "$i" -lt "${#args[@]}" ]; do
+    local a="${args[$i]}"
+    if [ "$a" = "--client-secret" ] || [ "$a" = "--auth-token" ]; then
+      printf ' %q %q' "$a" "***REDACTED***" >&2
+      i=$((i + 2))
+      continue
+    fi
+    printf ' %q' "$a" >&2
+    i=$((i + 1))
+  done
+  printf '\n' >&2
+
+  local fifo
+  fifo="$(mktemp "${TMPDIR:-/tmp}/spotdl-output.XXXXXX")"
+  rm -f "$fifo"
+  mkfifo "$fifo"
+
+  spotdl "${args[@]}" >"$fifo" 2>&1 &
+  local spotdl_pid=$!
+
+  local abort=0
+  local retry_wait=""
+  local retry_line=""
+  local line
+  while IFS= read -r line; do
+    printf '%s\n' "$line"
+    if retry_wait="$(retry_wait_seconds_from_line "$line")"; then
+      if [ "$retry_wait" -gt "$MAX_RETRY_WAIT_SECONDS" ]; then
+        abort=1
+        retry_line="$line"
+        break
+      fi
+    fi
+  done <"$fifo"
+
+  if [ "$abort" -eq 1 ]; then
+    echo "ERROR: rate limit hit; spotdl wants to wait ${retry_wait}s (> ${MAX_RETRY_WAIT_SECONDS}s). Aborting." >&2
+    if [ -n "$retry_line" ]; then
+      echo "ERROR: triggering line: $retry_line" >&2
+    fi
+    kill "$spotdl_pid" 2>/dev/null || true
+    for _ in {1..50}; do
+      if ! kill -0 "$spotdl_pid" 2>/dev/null; then
+        break
+      fi
+      sleep 0.1
+    done
+    if kill -0 "$spotdl_pid" 2>/dev/null; then
+      kill -KILL "$spotdl_pid" 2>/dev/null || true
+    fi
+    wait "$spotdl_pid" 2>/dev/null || true
+    rm -f "$fifo"
+    return 1
+  fi
+
+  wait "$spotdl_pid"
+  local status=$?
+  rm -f "$fifo"
+  return "$status"
+}
+
 download_playlist() {
   local playlist_url="$1"
   local root="$2"
@@ -173,10 +264,11 @@ download_playlist() {
   absolute_root="$(cd "$root" && pwd -P)"
   local base_dir="$absolute_root/unprocessed"
   local sync_file="$absolute_root/$SYNC_FILE_NAME"
+  local download_file="$absolute_root/$DOWNLOAD_FILE_NAME"
   mkdir -p "$base_dir"
   mkdir -p "$(dirname "$sync_file")"
 
-  (
+  if ! (
     cd "$base_dir"
     local -a spotdl_args=(
       --client-id "$SPOTDL_CLIENT_ID"
@@ -188,12 +280,16 @@ download_playlist() {
     fi
     spotdl_args+=(--threads "$THREADS")
 
-    if [ -f "$sync_file" ]; then
-      spotdl sync "$sync_file" "${spotdl_args[@]}"
+    if [ -f "$download_file" ]; then
+      run_spotdl_with_retry_wait_guard download "$download_file" "${spotdl_args[@]}" || exit $?
+    elif [ -f "$sync_file" ]; then
+      run_spotdl_with_retry_wait_guard sync "$sync_file" "${spotdl_args[@]}" || exit $?
     else
-      spotdl sync "$playlist_url" --save-file "$sync_file" "${spotdl_args[@]}"
+      run_spotdl_with_retry_wait_guard sync "$playlist_url" --save-file "$sync_file" "${spotdl_args[@]}" || exit $?
     fi
-  )
+  ); then
+    exit $?
+  fi
 
   if [ "$DELAY_SECONDS" != "0" ]; then
     sleep "$DELAY_SECONDS"
