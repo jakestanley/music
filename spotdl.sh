@@ -274,6 +274,7 @@ download_playlist() {
       --client-id "$SPOTDL_CLIENT_ID"
       --client-secret "$SPOTDL_CLIENT_SECRET"
       --use-cache-file
+      --save-errors "$absolute_root/spotdl.errors.json"
     )
     if [ -n "$MAX_RETRIES" ]; then
       spotdl_args+=(--max-retries "$MAX_RETRIES")
