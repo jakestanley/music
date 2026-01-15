@@ -7,6 +7,7 @@ This workspace holds helper scripts for downloading music assets and generating 
 These scripts assume the following tools are installed and available on your `PATH`:
 
 - `spotdl` for Spotify downloads
+  - Currently using this fork that has exponential back off on the Spotify API https://github.com/spotDL/spotify-downloader/pull/2583
 - `demucs` for stem separation
 - `yt-dlp` and `id3v2` for YouTube downloads + tagging
 - `curl` for UpSnap API calls (Windows offload only)
@@ -111,6 +112,24 @@ The script creates `<PLAYLIST_TARGET_DIR>/unprocessed`, switches into it, and ru
 
 Setup:
 - Copy `.env.example` to `.env` and fill in `SPOTDL_CLIENT_ID` and `SPOTDL_CLIENT_SECRET`.
+
+Manifest mode:
+You can pass `--manifest <MANIFEST_FILE>` instead of positional arguments to download multiple playlists in one run. The manifest must be a JSON array (or single object) where each entry is an object that specifies a playlist URL (`playlist_url`, `playlistUrl`, `playlistURL`, or `url`) and a root path (`root`, `path`, `target_dir`, or `targetDir`). Example:
+
+```json
+[
+  {
+    "playlist_url": "https://open.spotify.com/playlist/abc123",
+    "root": "/home/jake/Music/Playlists/CardioMix"
+  },
+  {
+    "url": "https://open.spotify.com/playlist/xyz789",
+    "path": "/home/jake/Music/Playlists/StudyVibes"
+  }
+]
+```
+
+Each root directory must exist before running `spotdl.sh` (the script keeps the `unprocessed/` subfolder it creates), and the playlist downloads run sequentially in manifest order.
 
 ## `demucs.sh`
 
