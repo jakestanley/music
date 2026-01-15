@@ -21,10 +21,14 @@ require_var() {
 }
 
 print_usage() {
-  echo "Usage: $0 [--manifest <MANIFEST_FILE>] | <PLAYLIST_URL> <PLAYLIST_TARGET_DIR>" >&2
+  echo "Usage: $0 [--manifest <MANIFEST_FILE>] [--sync-file <FILE>] [--delay <SECONDS>] [--max-retries <N>] | <PLAYLIST_URL> <PLAYLIST_TARGET_DIR>" >&2
 }
 
 MANIFEST=""
+SYNC_FILE_NAME="playlist.sync.spotdl"
+DELAY_SECONDS="0"
+MAX_RETRIES=""
+THREADS="1"
 POSITIONAL=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -55,6 +59,86 @@ while [ "$#" -gt 0 ]; do
         exit 1
       fi
       MANIFEST="$1"
+      shift
+      ;;
+    --sync-file=*)
+      SYNC_FILE_NAME="${1#--sync-file=}"
+      if [ -z "$SYNC_FILE_NAME" ]; then
+        echo "--sync-file requires a file name" >&2
+        exit 1
+      fi
+      shift
+      ;;
+    --sync-file)
+      shift
+      if [ "$#" -eq 0 ]; then
+        echo "--sync-file requires a file name" >&2
+        exit 1
+      fi
+      SYNC_FILE_NAME="$1"
+      shift
+      ;;
+    --delay=*)
+      DELAY_SECONDS="${1#--delay=}"
+      if ! [[ "$DELAY_SECONDS" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+        echo "--delay must be a number of seconds (e.g. 2 or 0.5)" >&2
+        exit 1
+      fi
+      shift
+      ;;
+    --delay)
+      shift
+      if [ "$#" -eq 0 ]; then
+        echo "--delay requires a number of seconds" >&2
+        exit 1
+      fi
+      DELAY_SECONDS="$1"
+      if ! [[ "$DELAY_SECONDS" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+        echo "--delay must be a number of seconds (e.g. 2 or 0.5)" >&2
+        exit 1
+      fi
+      shift
+      ;;
+    --max-retries=*)
+      MAX_RETRIES="${1#--max-retries=}"
+      if ! [[ "$MAX_RETRIES" =~ ^[0-9]+$ ]]; then
+        echo "--max-retries must be an integer" >&2
+        exit 1
+      fi
+      shift
+      ;;
+    --max-retries)
+      shift
+      if [ "$#" -eq 0 ]; then
+        echo "--max-retries requires an integer" >&2
+        exit 1
+      fi
+      MAX_RETRIES="$1"
+      if ! [[ "$MAX_RETRIES" =~ ^[0-9]+$ ]]; then
+        echo "--max-retries must be an integer" >&2
+        exit 1
+      fi
+      shift
+      ;;
+    --threads=*)
+      THREADS="${1#--threads=}"
+      if ! [[ "$THREADS" =~ ^[0-9]+$ ]] || [ "$THREADS" -lt 1 ]; then
+        echo "--threads must be an integer >= 1" >&2
+        exit 1
+      fi
+      shift
+      ;;
+    --threads)
+      shift
+      if [ "$#" -eq 0 ]; then
+        echo "--threads requires an integer >= 1" >&2
+        exit 1
+      fi
+      THREADS="$1"
+      if ! [[ "$THREADS" =~ ^[0-9]+$ ]] || [ "$THREADS" -lt 1 ]; then
+        echo "--threads must be an integer >= 1" >&2
+        exit 1
+      fi
       shift
       ;;
     -* )
@@ -88,12 +172,32 @@ download_playlist() {
   local absolute_root
   absolute_root="$(cd "$root" && pwd -P)"
   local base_dir="$absolute_root/unprocessed"
+  local sync_file="$absolute_root/$SYNC_FILE_NAME"
   mkdir -p "$base_dir"
+  mkdir -p "$(dirname "$sync_file")"
 
   (
     cd "$base_dir"
-    spotdl "$playlist_url" --client-id "$SPOTDL_CLIENT_ID" --client-secret "$SPOTDL_CLIENT_SECRET"
+    local -a spotdl_args=(
+      --client-id "$SPOTDL_CLIENT_ID"
+      --client-secret "$SPOTDL_CLIENT_SECRET"
+      --use-cache-file
+    )
+    if [ -n "$MAX_RETRIES" ]; then
+      spotdl_args+=(--max-retries "$MAX_RETRIES")
+    fi
+    spotdl_args+=(--threads "$THREADS")
+
+    if [ -f "$sync_file" ]; then
+      spotdl sync "$sync_file" "${spotdl_args[@]}"
+    else
+      spotdl sync "$playlist_url" --save-file "$sync_file" "${spotdl_args[@]}"
+    fi
   )
+
+  if [ "$DELAY_SECONDS" != "0" ]; then
+    sleep "$DELAY_SECONDS"
+  fi
 }
 
 parse_manifest() {

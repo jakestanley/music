@@ -96,7 +96,7 @@ NFS note: I keep a mount on the Mac that points to the server's `Music/Playlists
 
 ## `spotdl.sh`
 
-Purpose: download a Spotify playlist into an `unprocessed/` folder ready for Demucs.
+Purpose: keep a Spotify playlist mirrored into an `unprocessed/` folder ready for Demucs, without re-querying/downloading everything every run.
 
 Usage:
 ```
@@ -108,10 +108,25 @@ Usage:
 | `<PLAYLIST_URL>` | Spotify playlist URL to fetch with `spotdl` |
 | `<PLAYLIST_TARGET_DIR>` | base path where the script stores `unprocessed/` |
 
-The script creates `<PLAYLIST_TARGET_DIR>/unprocessed`, switches into it, and runs `spotdl` for the supplied playlist.
+How it avoids rate limits:
+- On first run, it calls `spotdl sync <PLAYLIST_URL> --save-file <PLAYLIST_TARGET_DIR>/playlist.sync.spotdl --use-cache-file`.
+- On later runs, it calls `spotdl sync <PLAYLIST_TARGET_DIR>/playlist.sync.spotdl --use-cache-file` so only new additions trigger Spotify lookups + downloads (existing files are skipped by the downloader).
+
+Options:
+
+| Option | Description |
+|--------|-------------|
+| `--sync-file <FILE>` | name/path under `<PLAYLIST_TARGET_DIR>/` for the sync state (default `playlist.sync.spotdl`) |
+| `--delay <SECONDS>` | sleep between playlist syncs (useful in `--manifest` mode to avoid 429s) |
+| `--threads <N>` | number of threads (defaults to `1`; increase if you want more concurrency) |
+| `--max-retries <N>` | increase retries/backoff for transient Spotify 429s |
 
 Setup:
 - Copy `.env.example` to `.env` and fill in `SPOTDL_CLIENT_ID` and `SPOTDL_CLIENT_SECRET`.
+
+Rate limit tips:
+- Prefer re-running `./spotdl.sh ...` over re-downloading from scratch; the sync file is what keeps API usage low.
+- If you still hit 429s, reduce concurrency with `--threads 1`, add `--delay 2` (or higher), and/or bump `--max-retries 20` so the built-in backoff has time to honor `Retry-After` and drain the limit.
 
 Manifest mode:
 You can pass `--manifest <MANIFEST_FILE>` instead of positional arguments to download multiple playlists in one run. The manifest must be a JSON array (or single object) where each entry is an object that specifies a playlist URL (`playlist_url`, `playlistUrl`, `playlistURL`, or `url`) and a root path (`root`, `path`, `target_dir`, or `targetDir`). Example:
