@@ -4,15 +4,35 @@
         "root": "/home/jake/Music/Playlists/BATW Nightpunk"
     },
     {
-        "playlist_url": "https://open.spotify.com/playlist/2j2kRve6cG96oaQWwPbiIV",
-        "root": "/home/jake/Music/Playlists/CardioMix"
-    },
-    {
         "playlist_url": "https://open.spotify.com/playlist/7lvQQi0mGKUgyuR9pSjYkB",
         "root": "/home/jake/Music/Playlists/BATW_Candidates"
     },
     {
+        "playlist_url": "https://open.spotify.com/playlist/3qgdZ9pMfhrUGObQhoE6P6",
+        "root": "/home/jake/Music/Playlists/Cardio_No_English"
+    },
+    {
+        "playlist_url": "https://open.spotify.com/playlist/6j7SzWsDEPkzyaolx0U79L",
+        "root": "/home/jake/Music/Playlists/Cardio_PUSH"
+    },
+    {
+        "playlist_url": "https://open.spotify.com/playlist/2j2kRve6cG96oaQWwPbiIV",
+        "root": "/home/jake/Music/Playlists/CardioMix"
+    },
+    {
+        "playlist_url": "https://open.spotify.com/playlist/5Z2DNpt536p6ymn6DqBYwQ",
+        "root": "/home/jake/Music/Playlists/Doom Slaying"
+    },
+    {
+        "playlist_url": "https://open.spotify.com/playlist/5yjiyipovSsieEdR9F1Xhf",
+        "root":"/home/jake/Music/Playlists/Driving"
+    },
+    {
         "playlist_url": "https://open.spotify.com/playlist/4qtjVUqOis2roGSthLCVIH",
         "root": "/home/jake/Music/Playlists/LiftingMix"
+    },
+    {
+        "playlist_url": "https://open.spotify.com/playlist/55yVznSX6b3Fhsg5cwPHsj",
+        "root": "/home/jake/Music/Playlists/PhrasesAndSamples"
     }
 ]

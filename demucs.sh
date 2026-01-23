@@ -492,35 +492,12 @@ run_windows() {
     "${ssh_cmd[@]}" "powershell -NoProfile -Command \"$cmd\""
   }
 
-  get_token() {
-    curl -s -X POST "$UPSNAP_HOST/api/collections/_superusers/auth-with-password" \
-      -H "Content-Type: application/json" \
-      -d "{\"identity\":\"$UPSNAP_USERNAME\",\"password\":\"$UPSNAP_PASSWORD\"}" \
-      | python3 -c 'import json,sys; print(json.load(sys.stdin).get("token", ""))'
-  }
-
-  local token
-  token="$(get_token)"
-  if [ -z "$token" ]; then
-    echo "Failed to authenticate with UpSnap" >&2
-    exit 1
-  fi
-
-  local device_id
-  device_id="${UPSNAP_DEVICE_ID:-}"
-  if [ -z "$device_id" ]; then
-    require_var UPSNAP_DEVICE_NAME
-    device_id="$(curl -s "$UPSNAP_HOST/api/collections/devices/records" \
-      -H "Authorization: Bearer $token" \
-      | python3 -c 'import json,sys,os; data=json.load(sys.stdin); name=os.environ.get("UPSNAP_DEVICE_NAME"); records=data.get("items", []); match=next((r for r in records if r.get("name")==name), None); print(match.get("id", "") if match else "")')"
-  fi
-
-  if [ -z "$device_id" ]; then
-    echo "Unable to resolve UpSnap device id" >&2
-    echo "Available devices:" >&2
-    curl -s "$UPSNAP_HOST/api/collections/devices/records" \
-      -H "Authorization: Bearer $token" \
-      | python3 -c 'import json,sys; data=json.load(sys.stdin); records=data.get("items", []); [print("{}  {}".format(r.get("id",""), r.get("name",""))) for r in records]'
+  local token device_id wake_out
+  wake_out="$(bash "$script_dir/upsnap_wake.sh" --print-token --quiet)"
+  wake_out="${wake_out//$'\r'/}"
+  IFS=$'\t' read -r device_id token <<<"$wake_out"
+  if [ -z "${device_id:-}" ] || [ -z "${token:-}" ]; then
+    echo "UpSnap wake did not return device id + token" >&2
     exit 1
   fi
 
@@ -596,8 +573,7 @@ run_windows() {
 
   trap cleanup EXIT
 
-  echo "Requesting UpSnap wake for Windows host..."
-  curl -s "$UPSNAP_HOST/api/upsnap/wake/$device_id" -H "Authorization: Bearer $token" >/dev/null
+  echo "UpSnap wake requested for Windows host (device id: $device_id)"
   should_sleep=1
 
   echo "Waiting for Windows SSH to become available..."
