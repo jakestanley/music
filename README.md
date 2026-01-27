@@ -2,6 +2,29 @@
 
 This workspace holds helper scripts for downloading music assets and generating stems.
 
+## Quick start (end-to-end)
+
+```bash
+# 1) Fill in Spotify creds.
+cp .env.example .env
+
+# 2) Create manifest.json with playlist URLs + roots (each root must exist).
+mkdir -p ~/Music/Playlists/MyPlaylist
+
+# 3) Scrape + convert playlists into spotdl inputs.
+python3 scraper.py --manifest manifest.json
+python3 convert.py --manifest manifest.json
+
+# 4) Download audio + log spotdl errors.
+./spotdl.sh --manifest manifest.json
+
+# 5) Fallback any failures with yt-dlp search.
+python3 ytdlp_fallback.py --manifest manifest.json
+
+# 6) Split stems with Demucs (optional).
+./demucs.sh --manifest manifest.json
+```
+
 ## Prerequisites
 
 These scripts assume the following tools are installed and available on your `PATH`:

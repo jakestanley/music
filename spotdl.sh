@@ -157,6 +157,100 @@ done
 require_var SPOTDL_CLIENT_ID
 require_var SPOTDL_CLIENT_SECRET
 
+summarize_spotdl_errors() {
+  local errors_path="$1"
+  local download_path="$2"
+
+  if [ ! -f "$errors_path" ]; then
+    return 0
+  fi
+
+  local -a lines=()
+  mapfile -t lines < <(
+    python3 - "$errors_path" "$download_path" <<'PY'
+import json
+import os
+import re
+import sys
+
+errors_path = sys.argv[1]
+download_path = sys.argv[2]
+
+def extract_ids(value):
+    ids = set()
+    pat = re.compile(r"https?://open\\.spotify\\.com/track/([A-Za-z0-9]+)")
+
+    def walk(v):
+        if isinstance(v, dict):
+            for vv in v.values():
+                walk(vv)
+        elif isinstance(v, list):
+            for vv in v:
+                walk(vv)
+        elif isinstance(v, str):
+            for m in pat.finditer(v):
+                ids.add(m.group(1))
+
+    walk(value)
+    return ids
+
+def song_query(song):
+    name = song.get("name")
+    if not isinstance(name, str) or not name.strip():
+        name = "unknown title"
+    artists = []
+    raw_artists = song.get("artists")
+    if isinstance(raw_artists, list):
+        for a in raw_artists:
+            if isinstance(a, str) and a.strip():
+                artists.append(a.strip())
+    if not artists:
+        artist = song.get("artist")
+        if isinstance(artist, str) and artist.strip():
+            artists = [artist.strip()]
+    artist_part = artists[0] if artists else "unknown artist"
+    return f"{artist_part} - {name}"
+
+try:
+    with open(errors_path, encoding="utf-8") as handle:
+        errors_payload = json.load(handle)
+except Exception:
+    sys.exit(0)
+
+failed_ids = extract_ids(errors_payload)
+if not failed_ids:
+    sys.exit(0)
+
+name_by_id = {}
+if download_path and os.path.isfile(download_path):
+    try:
+        with open(download_path, encoding="utf-8") as handle:
+            songs = json.load(handle)
+        if isinstance(songs, list):
+            for song in songs:
+                if not isinstance(song, dict):
+                    continue
+                song_id = song.get("song_id")
+                if isinstance(song_id, str) and song_id.strip():
+                    name_by_id[song_id.strip()] = song_query(song)
+    except Exception:
+        pass
+
+for sid in sorted(failed_ids):
+    url = f"https://open.spotify.com/track/{sid}"
+    name = name_by_id.get(sid)
+    if name:
+        print(f"FAILED: {name} ({url})")
+    else:
+        print(f"FAILED: {url}")
+PY
+  )
+
+  if [ "${#lines[@]}" -gt 0 ]; then
+    printf '%s\n' "${lines[@]}"
+  fi
+}
+
 retry_wait_seconds_from_line() {
   local line="$1"
   local seconds=""
@@ -208,9 +302,45 @@ run_spotdl_with_retry_wait_guard() {
   local abort=0
   local retry_wait=""
   local retry_line=""
+  local current_song=""
+  local suppress_next_url=0
   local line
+  local candidate
   while IFS= read -r line; do
-    printf '%s\n' "$line"
+    candidate=""
+    if [[ "$line" =~ ^Downloading[[:space:]]+(.+)$ ]]; then
+      candidate="${BASH_REMATCH[1]}"
+    elif [[ "$line" =~ ^Searching[[:space:]]+for[[:space:]]+(.+)$ ]]; then
+      candidate="${BASH_REMATCH[1]}"
+    elif [[ "$line" =~ ^Searching[[:space:]]+for[[:space:]]+(.+)[[:space:]]+on[[:space:]]+.+$ ]]; then
+      candidate="${BASH_REMATCH[1]}"
+    elif [[ "$line" =~ ^Searching[[:space:]]+for[[:space:]]+query:[[:space:]]*(.+)$ ]]; then
+      candidate="${BASH_REMATCH[1]}"
+    elif [[ "$line" =~ ^Searching[[:space:]]+(.+)$ ]]; then
+      candidate="${BASH_REMATCH[1]}"
+    elif [[ "$line" =~ ^Processing[[:space:]]+(.+)$ ]]; then
+      candidate="${BASH_REMATCH[1]}"
+    elif [[ "$line" =~ ^Querying[[:space:]]+(.+)$ ]]; then
+      candidate="${BASH_REMATCH[1]}"
+    elif [[ "$line" =~ ^Resolving[[:space:]]+(.+)$ ]]; then
+      candidate="${BASH_REMATCH[1]}"
+    elif [[ "$line" =~ ^Matching[[:space:]]+(.+)$ ]]; then
+      candidate="${BASH_REMATCH[1]}"
+    fi
+    if [ -n "$candidate" ]; then
+      candidate="${candidate#"${candidate%%[![:space:]]*}"}"
+      candidate="${candidate%"${candidate##*[![:space:]]}"}"
+      if [[ "$line" =~ ^Processing[[:space:]]+query: ]]; then
+        candidate=""
+      elif [[ "$line" =~ ^Searching[[:space:]]+for[[:space:]]+query: ]]; then
+        candidate=""
+      elif [[ "$candidate" == *".spotdl"* ]]; then
+        candidate=""
+      fi
+      if [ -n "$candidate" ] && [ "$candidate" != "query:" ] && [ "$candidate" != "query" ]; then
+        current_song="$candidate"
+      fi
+    fi
     if retry_wait="$(retry_wait_seconds_from_line "$line")"; then
       if [ "$retry_wait" -gt "$MAX_RETRY_WAIT_SECONDS" ]; then
         abort=1
@@ -218,6 +348,26 @@ run_spotdl_with_retry_wait_guard() {
         break
       fi
     fi
+    if [[ "$line" =~ ^AudioProviderError:[[:space:]]+YT-DLP[[:space:]]+download[[:space:]]+error ]]; then
+      if [ -n "$current_song" ]; then
+        printf 'ERROR: YT-DLP download failed for %s\n' "$current_song"
+      else
+        printf 'ERROR: YT-DLP download failed for unknown song\n'
+      fi
+      suppress_next_url=1
+      continue
+    fi
+    if [ "$suppress_next_url" -eq 1 ]; then
+      if [[ "$line" =~ ^https?:// ]]; then
+        suppress_next_url=0
+        continue
+      fi
+      suppress_next_url=0
+    fi
+    if [[ "$line" =~ ^[[:space:]]*\(duplicate\)[[:space:]]*$ ]]; then
+      continue
+    fi
+    printf '%s\n' "$line"
   done <"$fifo"
 
   if [ "$abort" -eq 1 ]; then
@@ -281,12 +431,17 @@ download_playlist() {
     fi
     spotdl_args+=(--threads "$THREADS")
 
+    local status=0
     if [ -f "$download_file" ]; then
-      run_spotdl_with_retry_wait_guard download "$download_file" "${spotdl_args[@]}" || exit $?
+      run_spotdl_with_retry_wait_guard download "$download_file" "${spotdl_args[@]}" || status=$?
     elif [ -f "$sync_file" ]; then
-      run_spotdl_with_retry_wait_guard sync "$sync_file" "${spotdl_args[@]}" || exit $?
+      run_spotdl_with_retry_wait_guard sync "$sync_file" "${spotdl_args[@]}" || status=$?
     else
-      run_spotdl_with_retry_wait_guard sync "$playlist_url" --save-file "$sync_file" "${spotdl_args[@]}" || exit $?
+      run_spotdl_with_retry_wait_guard sync "$playlist_url" --save-file "$sync_file" "${spotdl_args[@]}" || status=$?
+    fi
+    summarize_spotdl_errors "$absolute_root/spotdl.errors.json" "$download_file"
+    if [ "$status" -ne 0 ]; then
+      exit "$status"
     fi
   ); then
     exit $?
