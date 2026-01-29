@@ -2,6 +2,18 @@
 
 This workspace holds helper scripts for downloading music assets and generating stems.
 
+## Sync only unprocessed for MIK
+
+```
+rsync -av --delete \
+  --prune-empty-dirs \
+  --exclude='._*' \
+  --include='*/' \
+  --include='*/unprocessed/***' \
+  --exclude='*' \
+  jake@adler:~/Music/Playlists/ ~/Music/Playlists/
+```
+
 ## Quick start (end-to-end)
 
 ```bash
@@ -243,11 +255,12 @@ Purpose: separate each MP3 in `<PLAYLIST_TARGET_DIR>/unprocessed` into Demucs ou
 
 Usage:
 ```
-./demucs.sh [--windows] [--clean] <PLAYLIST_TARGET_DIR...> [4|2|both]
+./demucs.sh [--manifest manifest.json] [--windows] [--clean] <PLAYLIST_TARGET_DIR...> [4|2|both]
 ```
 
 | Option | Description |
 |--------|-------------|
+| `--manifest <FILE>` | Read playlist roots from a manifest (same fields as spotdl). |
 | `<PLAYLIST_TARGET_DIR>` | base path where the script stores `unprocessed/`, `all/`, and `vocals/` outputs |
 | `[4|2|both]` | decide whether to produce only the four-stem directories, only the two-stem vocal isolations, or both |
 

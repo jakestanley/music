@@ -1,7 +1,7 @@
 import argparse
 import os
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 from scripts.core.env import load_env
 from scripts.core.paths import ensure_dir, resolve_dir
@@ -9,13 +9,15 @@ from scripts.demucs.cache import HashCache
 from scripts.demucs.hashing import get_file_hash
 from scripts.demucs.local import run_local
 from scripts.demucs.windows import RootContext, normalize_windows_name, run_windows
+from scripts.spotdl.manifest import parse_manifest
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--manifest", help="Path to manifest JSON; roots will be read from it.")
     parser.add_argument("--clean", action="store_true")
     parser.add_argument("--windows", action="store_true")
-    parser.add_argument("roots", nargs="+")
+    parser.add_argument("roots", nargs="*")
     return parser.parse_args()
 
 
@@ -26,6 +28,17 @@ def _find_stem_dir(stem_root: str, candidates: List[str]) -> str | None:
     return None
 
 
+def _load_roots_from_manifest(manifest_path: str) -> List[str]:
+    entries: List[Tuple[str, str]] = parse_manifest(manifest_path)
+    roots: List[str] = []
+    seen = set()
+    for _, root in entries:
+        if root not in seen:
+            roots.append(root)
+            seen.add(root)
+    return roots
+
+
 def main() -> int:
     args = _parse_args()
 
@@ -33,7 +46,11 @@ def main() -> int:
     load_env(str(repo_root / ".env"))
 
     mode = "both"
-    roots = list(args.roots)
+    roots: List[str] = []
+    if args.manifest:
+        roots.extend(_load_roots_from_manifest(args.manifest))
+    roots.extend(list(args.roots))
+
     if roots:
         last_arg = roots[-1]
         if last_arg in {"4", "2", "both"}:
@@ -41,7 +58,7 @@ def main() -> int:
             roots = roots[:-1]
 
     if not roots:
-        raise SystemExit("Usage: demucs [--windows] [--clean] <ROOT_DIR...> [4|2|both]")
+        raise SystemExit("Usage: demucs [--manifest FILE] [--windows] [--clean] <ROOT_DIR...> [4|2|both]")
 
     root_contexts: List[RootContext] = []
     root_mp3s: Dict[str, List[str]] = {}
