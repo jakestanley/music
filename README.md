@@ -44,6 +44,7 @@ These scripts assume the following tools are installed and available on your `PA
 - `demucs` for stem separation
 - `yt-dlp` and `id3v2` for YouTube downloads + tagging
 - `curl` for UpSnap API calls (Windows offload only)
+- Spotify API creds: set `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` (or reuse `SPOTDL_CLIENT_ID` / `SPOTDL_CLIENT_SECRET`). The scraper now uses the Spotify Web API with pagination, so playlists over 100 tracks are fully ingested.
 
 ## Getting started
 

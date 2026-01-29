@@ -4,19 +4,26 @@ from __future__ import annotations
 
 import argparse
 import json
-import shlex
-import subprocess
+import os
+import re
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List, Tuple
+
+import requests
+
+from scripts.core.env import load_env
 
 
 @dataclass(frozen=True)
 class ManifestEntry:
     playlist_url: str
     root: Path
+
+
+SPOTIFY_PLAYLIST_RE = re.compile(r"(playlist/|spotify:playlist:)([A-Za-z0-9]+)")
 
 
 def load_manifest(path: Path) -> list[ManifestEntry]:
@@ -65,38 +72,6 @@ def load_manifest(path: Path) -> list[ManifestEntry]:
     return entries
 
 
-def run_spotifyscraper_playlist(playlist_url: str, output_path: Path) -> None:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        "spotifyscraper",
-        "playlist",
-        "--output",
-        str(output_path),
-        "--pretty",
-        playlist_url,
-    ]
-    print(f"Running: {shlex.join(cmd)}", file=sys.stderr)
-    result = subprocess.run(cmd, text=True, capture_output=True)
-    if result.stdout:
-        print(result.stdout, end="")
-    if result.stderr:
-        print(result.stderr, end="", file=sys.stderr)
-
-    if result.returncode == 0:
-        return
-
-    message = (result.stdout or "") + "\n" + (result.stderr or "")
-    if "Unexpected error: 'list' object has no attribute 'get'" in message:
-        print(
-            "WARNING: spotifyscraper hit a known transient error; continuing with manifest.",
-            file=sys.stderr,
-        )
-        return
-
-    raise subprocess.CalledProcessError(
-        result.returncode, cmd, output=result.stdout, stderr=result.stderr
-    )
-
 def format_json_file(path: Path) -> None:
     try:
         with path.open(encoding="utf-8") as handle:
@@ -115,9 +90,127 @@ def format_json_file(path: Path) -> None:
         print(f"WARNING: failed to write formatted JSON: {path} ({exc})", file=sys.stderr)
 
 
+def _find_playlist_id(url: str) -> str:
+    m = SPOTIFY_PLAYLIST_RE.search(url)
+    if not m:
+        raise ValueError(f"Could not parse playlist id from URL: {url}")
+    return m.group(2)
+
+
+def _client_credentials() -> Tuple[str, str]:
+    client_id = os.environ.get("SPOTIFY_CLIENT_ID") or os.environ.get("SPOTDL_CLIENT_ID")
+    client_secret = os.environ.get("SPOTIFY_CLIENT_SECRET") or os.environ.get("SPOTDL_CLIENT_SECRET")
+    if not client_id or not client_secret:
+        raise SystemExit(
+            "Set SPOTIFY_CLIENT_ID/SPOTIFY_CLIENT_SECRET (or reuse SPOTDL_CLIENT_ID/SPOTDL_CLIENT_SECRET)."
+        )
+    return client_id, client_secret
+
+
+def _get_access_token(client_id: str, client_secret: str) -> str:
+    resp = requests.post(
+        "https://accounts.spotify.com/api/token",
+        data={"grant_type": "client_credentials"},
+        auth=(client_id, client_secret),
+        timeout=10,
+    )
+    if resp.status_code != 200:
+        raise SystemExit(f"Spotify auth failed: HTTP {resp.status_code} {resp.text}")
+    data = resp.json()
+    token = data.get("access_token")
+    if not token:
+        raise SystemExit("Spotify auth response missing access_token")
+    return str(token)
+
+
+def _fetch_playlist_meta(playlist_id: str, token: str) -> Dict[str, Any]:
+    resp = requests.get(
+        f"https://api.spotify.com/v1/playlists/{playlist_id}",
+        params={"fields": "name,tracks.total,external_urls"},
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=10,
+    )
+    if resp.status_code != 200:
+        raise SystemExit(f"Spotify playlist fetch failed: HTTP {resp.status_code} {resp.text}")
+    return resp.json()
+
+
+def _fetch_tracks(playlist_id: str, token: str) -> List[Dict[str, Any]]:
+    tracks: List[Dict[str, Any]] = []
+    url = f"https://api.spotify.com/v1/playlists/{playlist_id}/tracks"
+    params = {
+        "limit": 100,
+        "offset": 0,
+        "fields": "items(track(name,duration_ms,id,uri,is_local,artists(name),external_urls)),next",
+    }
+    while True:
+        resp = requests.get(url, params=params, headers={"Authorization": f"Bearer {token}"}, timeout=15)
+        if resp.status_code != 200:
+            raise SystemExit(f"Spotify tracks fetch failed: HTTP {resp.status_code} {resp.text}")
+        payload = resp.json()
+        items = payload.get("items") or []
+        for item in items:
+            track = item.get("track")
+            if not isinstance(track, dict):
+                continue
+            if track.get("is_local") or track.get("id") is None:
+                # Skip local/unavailable tracks since they can't be downloaded
+                continue
+            tracks.append(track)
+        next_url = payload.get("next")
+        if not next_url:
+            break
+        url = next_url
+        params = {}  # next_url already contains query params
+    return tracks
+
+
+def _slim_track(track: Dict[str, Any]) -> Dict[str, Any]:
+    artists = track.get("artists") or []
+    artist_objs = []
+    if isinstance(artists, list):
+        for a in artists:
+            if isinstance(a, dict) and isinstance(a.get("name"), str):
+                artist_objs.append({"name": a["name"]})
+
+    external_urls = track.get("external_urls")
+    if isinstance(external_urls, dict) and isinstance(external_urls.get("spotify"), str):
+        ext_urls = {"spotify": external_urls["spotify"]}
+    else:
+        ext_urls = {}
+
+    return {
+        "name": track.get("name") or "Unknown Title",
+        "duration_ms": track.get("duration_ms") or 0,
+        "id": track.get("id"),
+        "uri": track.get("uri"),
+        "artists": artist_objs,
+        "external_urls": ext_urls,
+    }
+
+
+def fetch_playlist_json(playlist_url: str, output_path: Path, token: str) -> None:
+    playlist_id = _find_playlist_id(playlist_url)
+    meta = _fetch_playlist_meta(playlist_id, token)
+    tracks_full = _fetch_tracks(playlist_id, token)
+    tracks = [_slim_track(t) for t in tracks_full]
+
+    payload = {
+        "name": meta.get("name") or "Unknown Playlist",
+        "playlist_url": playlist_url,
+        "track_count": meta.get("tracks", {}).get("total") or len(tracks),
+        "tracks": tracks,
+    }
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, ensure_ascii=False)
+        handle.write("\n")
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate per-playlist JSON files from a manifest using spotifyscraper."
+        description="Generate per-playlist JSON files from a manifest using the Spotify Web API (paginated, no 100-track cap)."
     )
     parser.add_argument(
         "--manifest",
@@ -134,6 +227,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
+
+    repo_root = Path(__file__).resolve().parent
+    load_env(str(repo_root / ".env"))
+
+    try:
+        client_id, client_secret = _client_credentials()
+        token = _get_access_token(client_id, client_secret)
+    except SystemExit as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
 
     try:
         entries = load_manifest(Path(args.manifest))
@@ -158,18 +261,16 @@ def main(argv: list[str]) -> int:
                 continue
 
         try:
-            run_spotifyscraper_playlist(entry.playlist_url, output_path)
-        except FileNotFoundError:
-            print(
-                "ERROR: spotifyscraper not found on PATH. Install it and try again.",
-                file=sys.stderr,
-            )
-            return 127
-        except subprocess.CalledProcessError as exc:
-            return exc.returncode
+            fetch_playlist_json(entry.playlist_url, output_path, token)
+        except SystemExit as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+        except Exception as exc:
+            print(f"ERROR: failed to fetch playlist {entry.playlist_url}: {exc}", file=sys.stderr)
+            return 1
 
         format_json_file(output_path)
-        time.sleep(5)
+        time.sleep(1)
 
     return 0
 
