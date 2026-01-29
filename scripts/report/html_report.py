@@ -195,7 +195,7 @@ def list_audio_files(unprocessed_dir: Path) -> List[Path]:
         return []
     files: List[Path] = []
     for path in unprocessed_dir.rglob("*"):
-        if path.is_file() and path.suffix.lower() in AUDIO_EXTS:
+        if path.is_file() and not path.name.startswith("._") and path.suffix.lower() in AUDIO_EXTS:
             files.append(path)
     return files
 
@@ -433,4 +433,3 @@ def write_html_report(report: dict, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     html_text = render_html(report)
     output_path.write_text(html_text, encoding="utf-8")
-
