@@ -15,5 +15,8 @@
 *.webm
 *.asd
 .localized
-**/
 .env
+.venv/
+__pycache__/
+Playlists
+reports/

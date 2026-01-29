@@ -23,6 +23,16 @@ python3 ytdlp_fallback.py --manifest manifest.json
 
 # 6) Split stems with Demucs (optional).
 ./demucs.sh --manifest manifest.json
+
+### One-liner (everything + report)
+
+Run the whole pipeline (scrape → convert → spotdl → yt-dlp fallback → demucs) and write an HTML report:
+
+```bash
+./all.sh --manifest manifest.json
+```
+
+- Add `--select` to pick one playlist from the manifest interactively (numbered list).
 ```
 
 ## Prerequisites
@@ -284,12 +294,6 @@ while ($true) {
     % { $p=$_.Split(','); "{0}%  {1}C  {2:0.0}/{3:0.0} GB" -f $p[0].Trim(), $p[1].Trim(), ([double]$p[2]/1024), ([double]$p[3]/1024) }
   Start-Sleep -Seconds 1
 }
-```
-
-Client-side SSH helper:
-```
-./gpu_status.sh --interval 1
-./gpu_status.sh --once
 ```
 
 ## `ytdlp.sh`
