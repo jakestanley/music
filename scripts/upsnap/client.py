@@ -5,15 +5,16 @@ import requests
 
 
 class UpSnapClient:
-    def __init__(self, host: str, username: str, password: str) -> None:
+    def __init__(self, host: str, username: str, password: str, verify: str | bool = True) -> None:
         self.host = host.rstrip("/")
         self.username = username
         self.password = password
+        self.verify = verify
 
     def authenticate(self) -> str:
         url = f"{self.host}/api/collections/_superusers/auth-with-password"
         payload = {"identity": self.username, "password": self.password}
-        resp = requests.post(url, json=payload, timeout=30)
+        resp = requests.post(url, json=payload, timeout=30, verify=self.verify)
         if not resp.ok:
             raise SystemExit(f"Request failed (HTTP {resp.status_code}): POST {url}\n{resp.text[:1000]}")
         data = resp.json()
@@ -27,7 +28,7 @@ class UpSnapClient:
 
     def list_devices(self, token: str) -> Dict:
         url = f"{self.host}/api/collections/devices/records"
-        resp = requests.get(url, headers=self._auth_headers(token), timeout=30)
+        resp = requests.get(url, headers=self._auth_headers(token), timeout=30, verify=self.verify)
         if not resp.ok:
             raise SystemExit(f"Request failed (HTTP {resp.status_code}): GET {url}\n{resp.text[:1000]}")
         return resp.json()
@@ -41,13 +42,13 @@ class UpSnapClient:
 
     def wake(self, token: str, device_id: str) -> None:
         url = f"{self.host}/api/upsnap/wake/{device_id}"
-        resp = requests.get(url, headers=self._auth_headers(token), timeout=30)
+        resp = requests.get(url, headers=self._auth_headers(token), timeout=30, verify=self.verify)
         if not resp.ok:
             raise SystemExit(f"Request failed (HTTP {resp.status_code}): GET {url}\n{resp.text[:1000]}")
 
     def shutdown(self, token: str, device_id: str) -> None:
         url = f"{self.host}/api/upsnap/shutdown/{device_id}"
-        resp = requests.get(url, headers=self._auth_headers(token), timeout=30)
+        resp = requests.get(url, headers=self._auth_headers(token), timeout=30, verify=self.verify)
         if not resp.ok:
             raise SystemExit(f"Request failed (HTTP {resp.status_code}): GET {url}\n{resp.text[:1000]}")
 
@@ -56,6 +57,10 @@ def load_upsnap_client() -> "UpSnapClient":
     host = os.environ.get("UPSNAP_HOST", "")
     username = os.environ.get("UPSNAP_USERNAME", "")
     password = os.environ.get("UPSNAP_PASSWORD", "")
+    ca_cert = os.environ.get("UPSNAP_CA_CERT")
     if not host or not username or not password:
         raise SystemExit("Missing required env var: UPSNAP_HOST/UPSNAP_USERNAME/UPSNAP_PASSWORD")
-    return UpSnapClient(host, username, password)
+    verify: str | bool = True
+    if ca_cert:
+        verify = ca_cert
+    return UpSnapClient(host, username, password, verify=verify)
