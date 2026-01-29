@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -140,6 +141,7 @@ def main() -> int:
     else:
         report_path = repo_root / "reports" / f"report-{timestamp}.html"
 
+    report_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         report = generate_report(
             manifest_entries=entries,
@@ -147,7 +149,10 @@ def main() -> int:
             playlist_json_name=args.playlist_json_name,
         )
         write_html_report(report, report_path)
+        latest_path = report_path.parent / "latest.html"
+        shutil.copyfile(report_path, latest_path)
         print(f"\nReport written to {report_path}")
+        print(f"Latest report copy: {latest_path}")
     finally:
         if temp_manifest:
             try:
