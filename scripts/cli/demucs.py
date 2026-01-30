@@ -8,15 +8,16 @@ from scripts.core.paths import ensure_dir, resolve_dir
 from scripts.demucs.cache import HashCache
 from scripts.demucs.hashing import get_file_hash
 from scripts.demucs.local import run_local
-from scripts.demucs.windows import RootContext, normalize_windows_name, run_windows
+from scripts.demucs.api import RootContext, normalize_windows_name, run_windows
 from scripts.spotdl.manifest import parse_manifest
+from scripts.upsnap.batch import sleep_if_awake, validate_upsnap_env
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", help="Path to manifest JSON; roots will be read from it.")
     parser.add_argument("--clean", action="store_true")
-    parser.add_argument("--windows", action="store_true")
+    parser.add_argument("--api", action="store_true", help="Use the Demucs HTTP API instead of local execution.")
     parser.add_argument("roots", nargs="*")
     return parser.parse_args()
 
@@ -45,6 +46,9 @@ def main() -> int:
     repo_root = Path(__file__).resolve().parents[2]
     load_env(str(repo_root / ".env"))
 
+    if args.api:
+        validate_upsnap_env()
+
     mode = "both"
     roots: List[str] = []
     if args.manifest:
@@ -58,7 +62,7 @@ def main() -> int:
             roots = roots[:-1]
 
     if not roots:
-        raise SystemExit("Usage: demucs [--manifest FILE] [--windows] [--clean] <ROOT_DIR...> [4|2|both]")
+        raise SystemExit("Usage: demucs [--manifest FILE] [--api] [--clean] <ROOT_DIR...> [4|2|both]")
 
     root_contexts: List[RootContext] = []
     root_mp3s: Dict[str, List[str]] = {}
@@ -102,7 +106,7 @@ def main() -> int:
                 print(f"  hashed {processed}/{total}")
             name = os.path.splitext(os.path.basename(path))[0]
             candidates = [name]
-            if args.windows:
+            if args.api:
                 win_name = normalize_windows_name(name)
                 if win_name and win_name != name:
                     candidates.append(win_name)
@@ -120,67 +124,73 @@ def main() -> int:
         caches[ctx.root].save()
         print(f"Indexed {len(mp3_list)} hashes for {ctx.root}.")
 
-    for ctx in root_contexts:
-        mp3_list = root_mp3s[ctx.root]
-        if not mp3_list:
-            print(f"No MP3 files found in {ctx.base_dir}")
-            continue
+    all_ok = False
+    try:
+        for ctx in root_contexts:
+            mp3_list = root_mp3s[ctx.root]
+            if not mp3_list:
+                print(f"No MP3 files found in {ctx.base_dir}")
+                continue
 
-        ensure_dir(ctx.all_dir)
-        ensure_dir(ctx.vocals_dir)
+            ensure_dir(ctx.all_dir)
+            ensure_dir(ctx.vocals_dir)
 
-        missing_files: List[str] = []
-        symlinked = 0
-        for path in mp3_list:
-            name = os.path.splitext(os.path.basename(path))[0]
-            candidates = [name]
-            if args.windows:
-                win_name = normalize_windows_name(name)
-                if win_name and win_name != name:
-                    candidates.append(win_name)
+            missing_files: List[str] = []
+            symlinked = 0
+            for path in mp3_list:
+                name = os.path.splitext(os.path.basename(path))[0]
+                candidates = [name]
+                if args.api:
+                    win_name = normalize_windows_name(name)
+                    if win_name and win_name != name:
+                        candidates.append(win_name)
 
-            need_all = mode in {"4", "both"} and not _find_stem_dir(ctx.all_dir, candidates)
-            need_vocals = mode in {"2", "both"} and not _find_stem_dir(ctx.vocals_dir, candidates)
+                need_all = mode in {"4", "both"} and not _find_stem_dir(ctx.all_dir, candidates)
+                need_vocals = mode in {"2", "both"} and not _find_stem_dir(ctx.vocals_dir, candidates)
 
-            if need_all or need_vocals:
-                digest = get_file_hash(path, caches[ctx.root])
+                if need_all or need_vocals:
+                    digest = get_file_hash(path, caches[ctx.root])
+                else:
+                    digest = ""
+
+                if need_all and digest in hash_to_all_dir:
+                    src_dir = hash_to_all_dir[digest]
+                    dest_dir = os.path.join(ctx.all_dir, name)
+                    if not os.path.exists(dest_dir):
+                        os.symlink(src_dir, dest_dir)
+                        print(f"✓ exists, symlinking {dest_dir} -> {src_dir}")
+                        symlinked += 1
+                    if os.path.isfile(os.path.join(dest_dir, "vocals.wav")):
+                        need_all = False
+
+                if need_vocals and digest in hash_to_vocals_dir:
+                    src_dir = hash_to_vocals_dir[digest]
+                    dest_dir = os.path.join(ctx.vocals_dir, name)
+                    if not os.path.exists(dest_dir):
+                        os.symlink(src_dir, dest_dir)
+                        print(f"✓ exists, symlinking {dest_dir} -> {src_dir}")
+                        symlinked += 1
+                    if os.path.isfile(os.path.join(dest_dir, "vocals.wav")):
+                        need_vocals = False
+
+                if need_all or need_vocals:
+                    missing_files.append(path)
+
+            print(
+                f"Root summary for {ctx.root}: {len(mp3_list)} tracks, {symlinked} symlinked, {len(missing_files)} to process."
+            )
+
+            demucs_model = os.environ.get("DEMUCS_MODEL", "htdemucs")
+            if args.api:
+                run_windows(ctx, missing_files, mode, args.clean)
             else:
-                digest = ""
+                run_local(missing_files, mode, demucs_model, ctx.base_dir, ctx.all_dir, ctx.vocals_dir)
 
-            if need_all and digest in hash_to_all_dir:
-                src_dir = hash_to_all_dir[digest]
-                dest_dir = os.path.join(ctx.all_dir, name)
-                if not os.path.exists(dest_dir):
-                    os.symlink(src_dir, dest_dir)
-                    print(f"✓ exists, symlinking {dest_dir} -> {src_dir}")
-                    symlinked += 1
-                if os.path.isfile(os.path.join(dest_dir, "vocals.wav")):
-                    need_all = False
-
-            if need_vocals and digest in hash_to_vocals_dir:
-                src_dir = hash_to_vocals_dir[digest]
-                dest_dir = os.path.join(ctx.vocals_dir, name)
-                if not os.path.exists(dest_dir):
-                    os.symlink(src_dir, dest_dir)
-                    print(f"✓ exists, symlinking {dest_dir} -> {src_dir}")
-                    symlinked += 1
-                if os.path.isfile(os.path.join(dest_dir, "vocals.wav")):
-                    need_vocals = False
-
-            if need_all or need_vocals:
-                missing_files.append(path)
-
-        print(
-            f"Root summary for {ctx.root}: {len(mp3_list)} tracks, {symlinked} symlinked, {len(missing_files)} to process."
-        )
-
-        demucs_model = os.environ.get("DEMUCS_MODEL", "htdemucs")
-        if args.windows:
-            run_windows(ctx, missing_files, mode, args.clean)
-        else:
-            run_local(missing_files, mode, demucs_model, ctx.base_dir, ctx.all_dir, ctx.vocals_dir)
-
-        caches[ctx.root].save()
+            caches[ctx.root].save()
+        all_ok = True
+    finally:
+        if args.api:
+            sleep_if_awake()
 
     return 0
 

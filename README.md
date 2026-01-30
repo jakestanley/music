@@ -255,7 +255,7 @@ Purpose: separate each MP3 in `<PLAYLIST_TARGET_DIR>/unprocessed` into Demucs ou
 
 Usage:
 ```
-./demucs.sh [--manifest manifest.json] [--windows] [--clean] <PLAYLIST_TARGET_DIR...> [4|2|both]
+./demucs.sh [--manifest manifest.json] [--api] [--clean] <PLAYLIST_TARGET_DIR...> [4|2|both]
 ```
 
 | Option | Description |
@@ -266,17 +266,17 @@ Usage:
 
 The script creates staging directories, runs Demucs as needed, and keeps the temporary work directories clean.
 
-### Windows GPU offload
+### Demucs API offload
 
-- Use `--windows` to run Demucs on a Windows GPU box via SSH + UpSnap.
-- Use `--clean` to delete the Windows temp work folder before starting.
-- Copy `.env.example` to `.env` and fill in the required variables.
-- Required vars: `UPSNAP_HOST`, `UPSNAP_USERNAME`, `UPSNAP_PASSWORD`, `UPSNAP_DEVICE_NAME` (or `UPSNAP_DEVICE_ID`), `WINDOWS_SSH_TARGET`, `WINDOWS_SSH_KEY`.
-- Optional vars: `WINDOWS_DEMUCS_MODEL`, `WINDOWS_DEMUCS_DEVICE` (defaults to `cuda`), `WINDOWS_PYTHON` (use the pipx demucs venv python for CUDA checks; use forward slashes or double-backslashes), `WINDOWS_GPU_MAX_TEMP`, `WINDOWS_GPU_RESUME_TEMP`, `WINDOWS_BATCH_SIZE` (upload/run in batches; default 10), `WINDOWS_AWAKE_MINUTES` (PowerToys Awake duration per batch; default 10), `WINDOWS_SLEEP_PROMPT_TIMEOUT` (seconds before auto-sleep prompt defaults; default 120).
-- Optional: `UPSNAP_CA_CERT` path to a CA bundle or root cert if your UpSnap host uses a self-signed certificate (e.g., `/etc/homelab/certs/ca/ca.crt`).
-- Optional: install PowerToys Awake to prevent sleep during long runs: `winget install --id Microsoft.PowerToys -e`.
-- During Windows offload runs, the script temporarily sets standby timeout to 0 via `powercfg` and restores it at the end for headless sleep prevention.
-- The script does not keep any files on the Windows machine after completion.
+- Use `--api` to submit batches to the Demucs HTTP API instead of running locally.
+- Configure the API endpoint and model in `.env`:
+  - `DEMUCS_API_URL` (default `https://demucs.stanley.arpa`)
+  - `DEMUCS_API_MODEL` (default `htdemucs` if unset)
+  - `DEMUCS_API_CA_CERT` path to a CA bundle or root cert if your API uses a self-signed certificate
+  - `DEMUCS_API_BATCH_SIZE` (default 10)
+  - `DEMUCS_API_POLL_SECS` (default 5)
+  - `DEMUCS_API_TIMEOUT_SECS` (default 3600)
+- The API returns a zip of stems; this script unpacks and installs outputs into `all/` and `vocals/`.
 - When multiple roots are provided, the script hashes `unprocessed/` files and symlinks missing stems to matching stems from other roots (saves time + disk).
 
 #### Setup (pipx + Python 3.11 + PyTorch 2.1):
@@ -321,6 +321,3 @@ Usage:
 ```
 
 The script ensures `yt-dlp` and `id3v2` are installed, sanitizes the artist/title for filenames, echoes the resolved parameters, asks for confirmation, downloads to `<TARGET_DIR>/<ARTIST> - <TITLE>.mp3`, and applies ID3 metadata (`Artist` and `Title` tags).
-
-# TODO
-- Figure out how to work around spotify rate limiting. get a developer account?
