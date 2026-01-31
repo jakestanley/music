@@ -17,11 +17,10 @@
 .localized
 .env
 .venv/
-__pycache__/
 **/__pycache__/
 *.pyc
 */
 !scripts/
 !scripts/**
-**/__pycache__/
-*.pyc
+scripts/**/__pycache__/
+scripts/**/*.pyc

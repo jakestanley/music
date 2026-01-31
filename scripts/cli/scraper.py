@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import os
 import re
@@ -14,7 +15,6 @@ from typing import Any, Dict, List, Tuple
 import requests
 
 from scripts.core.env import load_env
-from scripts.report.html_report import generate_report, write_html_report
 from scripts.spotdl.manifest import parse_manifest
 
 SPOTIFY_PLAYLIST_RE = re.compile(r"(playlist/|spotify:playlist:)([A-Za-z0-9]+)")
@@ -36,6 +36,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--download-name", default="playlist.download.spotdl")
     parser.add_argument("--report", default=None)
     parser.add_argument("--no-report", action="store_true")
+    parser.add_argument("--regenerate", action="store_true")
     args, extra = parser.parse_known_args(argv)
     if extra:
         _print_usage(Path(sys.argv[0]).name)
@@ -303,18 +304,84 @@ def _resolve_report_path(repo_root: Path, report_arg: str | None) -> Path:
     return repo_root / "reports" / "scraper.html"
 
 
+def _write_scraper_report(
+    entries: list[tuple[str, str]],
+    playlist_json_name: str,
+    output_path: Path,
+) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    template_path = Path(__file__).resolve().parents[2] / "scripts" / "report" / "templates" / "scraper_report.html"
+    html_template = template_path.read_text(encoding="utf-8")
+    lines: list[str] = []
+
+    for playlist_url, root in entries:
+        root_path = Path(root).expanduser().resolve()
+        playlist_path = root_path / playlist_json_name
+        lines.append("<section class='playlist'>")
+        lines.append("<details>")
+        header_title = html.escape(str(root_path))
+        header_url = html.escape(playlist_url)
+        header_count = "0"
+        if not playlist_path.is_file():
+            lines.append(f"<summary><span class='root'>{header_title}</span></summary>")
+            lines.append(f"<div class='muted'>{header_url}</div>")
+            lines.append("<p class='muted'>Missing playlist.json</p>")
+            lines.append("</details></section>")
+            continue
+        try:
+            payload = json.loads(playlist_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            lines.append(f"<summary><span class='root'>{header_title}</span></summary>")
+            lines.append(f"<div class='muted'>{header_url}</div>")
+            lines.append(f"<p class='muted'>Failed to read playlist.json: {html.escape(str(exc))}</p>")
+            lines.append("</details></section>")
+            continue
+        tracks = payload.get("tracks") if isinstance(payload, dict) else None
+        if not isinstance(tracks, list):
+            lines.append(f"<summary><span class='root'>{header_title}</span></summary>")
+            lines.append(f"<div class='muted'>{header_url}</div>")
+            lines.append("<p class='muted'>No track list found.</p>")
+            lines.append("</details></section>")
+            continue
+        header_count = str(len(tracks))
+        lines.append(
+            f"<summary><span class='root'>{header_title}</span><span class='count'>{header_count} songs</span></summary>"
+        )
+        lines.append(f"<div class='muted'>{header_url}</div>")
+        lines.append("<table><thead><tr><th>#</th><th>Artist</th><th>Title</th></tr></thead><tbody>")
+        row_index = 0
+        for track in tracks:
+            if not isinstance(track, dict):
+                continue
+            row_index += 1
+            title = track.get("name") or "Unknown Title"
+            artists = track.get("artists") or []
+            names: list[str] = []
+            if isinstance(artists, list):
+                for artist in artists:
+                    if isinstance(artist, dict):
+                        name = artist.get("name")
+                        if isinstance(name, str) and name.strip():
+                            names.append(name.strip())
+                    elif isinstance(artist, str) and artist.strip():
+                        names.append(artist.strip())
+            if not names:
+                names = ["Unknown Artist"]
+            artists_text = html.escape(", ".join(names))
+            title_text = html.escape(str(title))
+            lines.append(f"<tr><td>{row_index}</td><td>{artists_text}</td><td>{title_text}</td></tr>")
+        lines.append("</tbody></table>")
+        lines.append("</details></section>")
+
+    html_text = html_template.replace("{{CONTENT}}", "\n".join(lines))
+    output_path.write_text(html_text, encoding="utf-8")
+
+
 def main(argv: list[str]) -> int:
     args = _parse_args(argv)
 
     repo_root = Path(__file__).resolve().parents[2]
     load_env(str(repo_root / ".env"))
-
-    try:
-        client_id, client_secret = _client_credentials()
-        token = _get_access_token(client_id, client_secret)
-    except SystemExit as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 2
 
     manifest_path = Path(args.manifest)
     if not manifest_path.is_file():
@@ -327,70 +394,72 @@ def main(argv: list[str]) -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 
-    for playlist_url, root in entries:
-        root_path = Path(root)
-        if not root_path.is_dir():
-            print(f"ERROR: Root directory not found: {root_path}", file=sys.stderr)
-            return 1
-
-        output_path = (root_path / args.playlist_json_name).resolve()
-        if output_path.exists():
-            age_seconds = time.time() - output_path.stat().st_mtime
-            if age_seconds < 60:
-                print(f"Skipping (fresh): {output_path} ({int(age_seconds)}s old)", file=sys.stderr)
-                _format_json_file(output_path)
-                continue
-
+    if not args.regenerate:
         try:
-            playlist_payload = _fetch_playlist_json(playlist_url, output_path, token)
+            client_id, client_secret = _client_credentials()
+            token = _get_access_token(client_id, client_secret)
         except SystemExit as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
-            return 1
-        except Exception as exc:
-            print(f"ERROR: failed to fetch playlist {playlist_url}: {exc}", file=sys.stderr)
-            return 1
+            return 2
 
-        _format_json_file(output_path)
+        for playlist_url, root in entries:
+            root_path = Path(root)
+            if not root_path.is_dir():
+                print(f"ERROR: Root directory not found: {root_path}", file=sys.stderr)
+                return 1
 
-        try:
-            payload = _build_spotdl_sync_payload(playlist_url, playlist_payload)
-        except Exception as exc:
-            print(f"ERROR: {root_path}: {exc}", file=sys.stderr)
-            return 1
+            output_path = (root_path / args.playlist_json_name).resolve()
+            if output_path.exists():
+                age_seconds = time.time() - output_path.stat().st_mtime
+                if age_seconds < 60:
+                    print(f"Skipping (fresh): {output_path} ({int(age_seconds)}s old)", file=sys.stderr)
+                    _format_json_file(output_path)
+                    continue
 
-        sync_path = (root_path / args.sync_name).resolve()
-        download_path = (root_path / args.download_name).resolve()
-        try:
-            track_count = len(payload.get("songs", [])) if isinstance(payload.get("songs"), list) else "?"
-            print(f"Converting: {root_path}", file=sys.stderr)
-            print(f"- Input:  {output_path}", file=sys.stderr)
-            print(f"- Output: {sync_path} ({track_count} tracks)", file=sys.stderr)
-            _write_json(sync_path, payload)
-        except Exception as exc:
-            print(f"ERROR: failed to write {sync_path}: {exc}", file=sys.stderr)
-            return 1
+            try:
+                playlist_payload = _fetch_playlist_json(playlist_url, output_path, token)
+            except SystemExit as exc:
+                print(f"ERROR: {exc}", file=sys.stderr)
+                return 1
+            except Exception as exc:
+                print(f"ERROR: failed to fetch playlist {playlist_url}: {exc}", file=sys.stderr)
+                return 1
 
-        try:
-            songs = payload.get("songs")
-            if not isinstance(songs, list) or not all(isinstance(s, dict) for s in songs):
-                raise ValueError("payload.songs is not a list of song objects")
-            print(f"- Output: {download_path} (song list for `spotdl download`)", file=sys.stderr)
-            _write_json_list(download_path, songs)
-        except Exception as exc:
-            print(f"ERROR: failed to write {download_path}: {exc}", file=sys.stderr)
-            return 1
+            _format_json_file(output_path)
 
-        time.sleep(1)
+            try:
+                payload = _build_spotdl_sync_payload(playlist_url, playlist_payload)
+            except Exception as exc:
+                print(f"ERROR: {root_path}: {exc}", file=sys.stderr)
+                return 1
+
+            sync_path = (root_path / args.sync_name).resolve()
+            download_path = (root_path / args.download_name).resolve()
+            try:
+                track_count = len(payload.get("songs", [])) if isinstance(payload.get("songs"), list) else "?"
+                print(f"Converting: {root_path}", file=sys.stderr)
+                print(f"- Input:  {output_path}", file=sys.stderr)
+                print(f"- Output: {sync_path} ({track_count} tracks)", file=sys.stderr)
+                _write_json(sync_path, payload)
+            except Exception as exc:
+                print(f"ERROR: failed to write {sync_path}: {exc}", file=sys.stderr)
+                return 1
+
+            try:
+                songs = payload.get("songs")
+                if not isinstance(songs, list) or not all(isinstance(s, dict) for s in songs):
+                    raise ValueError("payload.songs is not a list of song objects")
+                print(f"- Output: {download_path} (song list for `spotdl download`)", file=sys.stderr)
+                _write_json_list(download_path, songs)
+            except Exception as exc:
+                print(f"ERROR: failed to write {download_path}: {exc}", file=sys.stderr)
+                return 1
+
+            time.sleep(1)
 
     if not args.no_report:
         report_path = _resolve_report_path(repo_root, args.report)
-        report = generate_report(
-            manifest_entries=entries,
-            manifest_path=manifest_path,
-            playlist_json_name=args.playlist_json_name,
-            download_name=args.download_name,
-        )
-        write_html_report(report, report_path)
+        _write_scraper_report(entries, args.playlist_json_name, report_path)
         print(f"Report written to {report_path}")
 
     return 0
