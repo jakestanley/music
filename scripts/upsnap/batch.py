@@ -208,6 +208,11 @@ def ensure_awake() -> None:
     waker = _get_waker()
     if _wake_done:
         return
+    status = waker.status()
+    if status == "online":
+        log("UpSnap status already online; skipping wake request", quiet=False)
+        _wake_done = True
+        return
     waker.wake()
     waker.wait_until_ready()
     _wake_done = True
