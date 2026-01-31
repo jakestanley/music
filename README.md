@@ -26,18 +26,15 @@ mkdir -p ~/Music/Playlists/MyPlaylist
 # 3) Scrape + convert playlists into spotdl inputs (also writes reports/scraper.html).
 ./scraper.sh --manifest manifest.json
 
-# 4) Download audio + log spotdl errors.
+# 4) Download audio + log spotdl errors (includes yt-dlp fallback + reports/spotdl.html).
 ./spotdl.sh --manifest manifest.json
-
-# 5) Fallback any failures with yt-dlp search.
-python3 ytdlp_fallback.py --manifest manifest.json
 
 # 6) Split stems with Demucs (optional).
 ./demucs.sh --manifest manifest.json
 
 ### One-liner (everything + report)
 
-Run the whole pipeline (scrape → convert → spotdl → yt-dlp fallback → demucs) and write an HTML report:
+Run the whole pipeline (scrape → convert → spotdl+fallback → demucs) and write an HTML report:
 
 ```bash
 ./all.sh --manifest manifest.json
@@ -155,12 +152,11 @@ NFS note: I keep a mount on the Mac that points to the server's `Music/Playlists
 
 1) Populate `manifest.json` with playlist roots and URLs (each `root` must already exist).
 2) Scrape + convert playlist metadata into each root: `./scraper.sh --manifest manifest.json` (writes `<root>/playlist.json`, `<root>/playlist.sync.spotdl`, `<root>/playlist.download.spotdl`, plus `reports/scraper.html`).
-4) Download audio: `./spotdl.sh --manifest manifest.json` (prefers `<root>/playlist.download.spotdl` to avoid Spotify playlist sync calls; falls back to sync when missing).
-5) Fallback any spotdl failures with yt-dlp search: `python3 ytdlp_fallback.py --manifest manifest.json` (uses `<root>/spotdl.errors.json` written by step 4; logs any remaining failures to `<root>/ytdlp_fallback.errors.jsonl`; use `--truncate-log` to reset the log each run).
+4) Download audio: `./spotdl.sh --manifest manifest.json` (prefers `<root>/playlist.download.spotdl` to avoid Spotify playlist sync calls; falls back to sync when missing; runs yt-dlp fallback automatically). This also writes `reports/spotdl.html`.
 
 ## `spotdl.sh`
 
-Purpose: keep a Spotify playlist mirrored into an `unprocessed/` folder ready for Demucs, without re-querying/downloading everything every run.
+Purpose: keep a Spotify playlist mirrored into an `unprocessed/` folder ready for Demucs, with yt-dlp fallback and a spotdl HTML report.
 
 Usage:
 ```
@@ -184,6 +180,10 @@ Options:
 | `--delay <SECONDS>` | sleep between playlist syncs (default `2`; useful in `--manifest` mode to avoid 429s) |
 | `--threads <N>` | number of threads (defaults to `1`; increase if you want more concurrency) |
 | `--max-retries <N>` | increase retries/backoff for transient Spotify 429s (default `5`) |
+| `--skip-fallback` | skip yt-dlp fallback |
+| `--report <HTML>` | write report to a custom path (default `reports/spotdl.html`) |
+| `--no-report` | skip report generation |
+| `--regenerate-report` | rebuild the HTML report from existing files without running spotdl/yt-dlp |
 
 Setup:
 - Copy `.env.example` to `.env` and fill in `SPOTDL_CLIENT_ID` and `SPOTDL_CLIENT_SECRET`.

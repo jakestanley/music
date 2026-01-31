@@ -15,6 +15,11 @@ from scripts.spotdl.errors import extract_ids
 AUDIO_EXTS = {".mp3", ".flac", ".wav", ".m4a", ".ogg", ".aac", ".wma", ".webm", ".opus"}
 
 
+def _is_macos_sidecar(path: Path | str) -> bool:
+    name = path.name if isinstance(path, Path) else Path(path).name
+    return name.startswith("._")
+
+
 @dataclass(frozen=True)
 class TrackEntry:
     name: str
@@ -184,7 +189,7 @@ def load_fallback_success(root: Path, filename: str) -> dict[str, List[str]]:
         fps = rec.get("filepaths")
         if not (isinstance(sid, str) and sid.strip() and isinstance(fps, list)):
             continue
-        paths = [fp for fp in fps if isinstance(fp, str)]
+        paths = [fp for fp in fps if isinstance(fp, str) and not _is_macos_sidecar(fp)]
         if paths:
             index[sid.strip()] = paths
     return index
@@ -195,7 +200,7 @@ def list_audio_files(unprocessed_dir: Path) -> List[Path]:
         return []
     files: List[Path] = []
     for path in unprocessed_dir.rglob("*"):
-        if path.is_file() and not path.name.startswith("._") and path.suffix.lower() in AUDIO_EXTS:
+        if path.is_file() and not _is_macos_sidecar(path) and path.suffix.lower() in AUDIO_EXTS:
             files.append(path)
     return files
 
@@ -287,38 +292,21 @@ def _html_escape(text: str | None) -> str:
     return html.escape(text or "")
 
 
+def _load_template() -> str:
+    template_path = Path(__file__).resolve().parent / "templates" / "spotdl_report.html"
+    return template_path.read_text(encoding="utf-8")
+
+
 def render_html(report_data: dict) -> str:
     generated_at = report_data["generated_at"]
     manifest_path = report_data["manifest"]
     entries = report_data["entries"]
 
-    css = """
-    body { font-family: "Segoe UI", system-ui, -apple-system, sans-serif; background: #f8fafc; color: #0f172a; margin: 24px; }
-    h1 { margin-bottom: 0.2em; }
-    h2 { margin-top: 1.4em; }
-    table { border-collapse: collapse; width: 100%; margin-top: 12px; margin-bottom: 24px; }
-    th, td { border: 1px solid #e2e8f0; padding: 8px 10px; font-size: 14px; }
-    th { background: #f1f5f9; text-align: left; }
-    tr.status-downloaded { background: #ecfdf3; }
-    tr.status-failed { background: #fef2f2; }
-    tr.status-missing { background: #fffbeb; }
-    .badge { display: inline-block; padding: 2px 7px; border-radius: 10px; font-size: 12px; font-weight: 600; }
-    .badge-downloaded { background: #16a34a; color: #f8fafc; }
-    .badge-failed { background: #dc2626; color: #f8fafc; }
-    .badge-missing { background: #d97706; color: #f8fafc; }
-    .summary-table td:nth-child(1) { width: 28%; }
-    .muted { color: #475569; font-size: 13px; }
-    .small { font-size: 12px; }
-    """
-
     html_parts: List[str] = []
-    html_parts.append("<!doctype html>")
-    html_parts.append("<html><head><meta charset='utf-8'>")
-    html_parts.append(f"<title>Music Download Report</title>")
-    html_parts.append(f"<style>{css}</style>")
-    html_parts.append("</head><body>")
-    html_parts.append("<h1>Music Download Report</h1>")
-    html_parts.append(f"<p class='muted'>Generated at {generated_at} from manifest {html.escape(manifest_path)}</p>")
+    html_parts.append("<p class='muted'>Generated at {generated_at} from manifest {manifest}</p>".format(
+        generated_at=html.escape(generated_at),
+        manifest=html.escape(manifest_path),
+    ))
 
     # Summary table
     html_parts.append("<h2>Summary</h2>")
@@ -341,17 +329,29 @@ def render_html(report_data: dict) -> str:
     for entry in entries:
         root = entry["root"]
         playlist_url = entry["playlist_url"]
-        html_parts.append(f"<h2>{html.escape(root)}</h2>")
+        summary = entry["summary"]
+        header = (
+            f"<span class='root'>{html.escape(root)}</span>"
+            f"<span class='counts'>{summary['downloaded']} downloaded · {summary['failed']} failed · {summary['missing']} missing · {summary['total']} total</span>"
+        )
+        html_parts.append("<section class='playlist'>")
+        html_parts.append("<details>")
+        html_parts.append(f"<summary>{header}</summary>")
         if playlist_url:
             html_parts.append(
-                f"<p class='muted'>Playlist: <a href='{html.escape(playlist_url)}'>{html.escape(playlist_url)}</a></p>"
+                f"<div class='muted'>Playlist: <a href='{html.escape(playlist_url)}'>{html.escape(playlist_url)}</a></div>"
             )
 
         html_parts.append("<table>")
         html_parts.append(
             "<thead><tr><th>#</th><th>Title</th><th>Artists</th><th>Status</th><th>Source</th><th>Files</th><th>Notes</th></tr></thead><tbody>"
         )
-        for idx, result in enumerate(entry["tracks"], start=1):
+        status_order = {"missing": 0, "failed": 1, "downloaded": 2}
+        sorted_tracks = sorted(
+            entry["tracks"],
+            key=lambda r: (status_order.get(r.status, 99), r.track.name.lower()),
+        )
+        for idx, result in enumerate(sorted_tracks, start=1):
             tr_class = f"status-{result.status}"
             badge_class = f"badge badge-{result.status}"
             artists = ", ".join(result.track.artists)
@@ -380,8 +380,15 @@ def render_html(report_data: dict) -> str:
                 html_parts.append(f"<li class='small'>{html.escape(fp)}</li>")
             html_parts.append("</ul>")
 
-    html_parts.append("</body></html>")
-    return "\n".join(html_parts)
+        html_parts.append("</details></section>")
+
+    content = "\n".join(html_parts)
+    template = _load_template()
+    return (
+        template.replace("{{CONTENT}}", content)
+        .replace("{{GENERATED_AT}}", html.escape(generated_at))
+        .replace("{{MANIFEST_PATH}}", html.escape(manifest_path))
+    )
 
 
 def generate_report(

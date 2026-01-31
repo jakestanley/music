@@ -121,19 +121,10 @@ def main() -> int:
             [py, "-m", "scripts.cli.scraper", "--manifest", str(manifest_for_commands), "--no-report"],
         )
     )
-    exit_codes.append(
-        run_step(
-            "spotdl download/sync",
-            [py, "-m", "scripts.cli.spotdl", "--manifest", str(manifest_for_commands)],
-        )
-    )
-    if not args.skip_fallback:
-        exit_codes.append(
-            run_step(
-                "yt-dlp fallback",
-                [py, str(repo_root / "ytdlp_fallback.py"), "--manifest", str(manifest_for_commands)],
-            )
-        )
+    spotdl_cmd = [py, "-m", "scripts.cli.spotdl", "--manifest", str(manifest_for_commands)]
+    if args.skip_fallback:
+        spotdl_cmd.append("--skip-fallback")
+    exit_codes.append(run_step("spotdl download/sync", spotdl_cmd))
 
     if args.demucs_mode != "skip":
         demucs_cmd = [py, "-m", "scripts.cli.demucs"] + roots + [args.demucs_mode]
