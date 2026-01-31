@@ -115,8 +115,12 @@ def main() -> int:
     exit_codes: List[int] = []
     py = sys.executable
 
-    exit_codes.append(run_step("Scrape playlists", [py, str(repo_root / "scraper.py"), "--manifest", str(manifest_for_commands)]))
-    exit_codes.append(run_step("Convert to spotdl", [py, str(repo_root / "convert.py"), "--manifest", str(manifest_for_commands)]))
+    exit_codes.append(
+        run_step(
+            "Scrape playlists + convert",
+            [py, "-m", "scripts.cli.scraper", "--manifest", str(manifest_for_commands), "--no-report"],
+        )
+    )
     exit_codes.append(
         run_step(
             "spotdl download/sync",

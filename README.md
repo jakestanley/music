@@ -23,9 +23,8 @@ cp .env.example .env
 # 2) Create manifest.json with playlist URLs + roots (each root must exist).
 mkdir -p ~/Music/Playlists/MyPlaylist
 
-# 3) Scrape + convert playlists into spotdl inputs.
-python3 scraper.py --manifest manifest.json
-python3 convert.py --manifest manifest.json
+# 3) Scrape + convert playlists into spotdl inputs (also writes reports/scraper.html).
+./scraper.sh --manifest manifest.json
 
 # 4) Download audio + log spotdl errors.
 ./spotdl.sh --manifest manifest.json
@@ -155,8 +154,7 @@ NFS note: I keep a mount on the Mac that points to the server's `Music/Playlists
 ## Usage (Rate-Limit Safe)
 
 1) Populate `manifest.json` with playlist roots and URLs (each `root` must already exist).
-2) Scrape playlist metadata into each root: `python3 scraper.py --manifest manifest.json` (writes `<root>/playlist.json`).
-3) Convert scraped JSON into spotdl inputs: `python3 convert.py --manifest manifest.json` (writes `<root>/playlist.sync.spotdl` and `<root>/playlist.download.spotdl`).
+2) Scrape + convert playlist metadata into each root: `./scraper.sh --manifest manifest.json` (writes `<root>/playlist.json`, `<root>/playlist.sync.spotdl`, `<root>/playlist.download.spotdl`, plus `reports/scraper.html`).
 4) Download audio: `./spotdl.sh --manifest manifest.json` (prefers `<root>/playlist.download.spotdl` to avoid Spotify playlist sync calls; falls back to sync when missing).
 5) Fallback any spotdl failures with yt-dlp search: `python3 ytdlp_fallback.py --manifest manifest.json` (uses `<root>/spotdl.errors.json` written by step 4; logs any remaining failures to `<root>/ytdlp_fallback.errors.jsonl`; use `--truncate-log` to reset the log each run).
 
@@ -213,41 +211,24 @@ You can pass `--manifest <MANIFEST_FILE>` instead of positional arguments to dow
 
 Each root directory must exist before running `spotdl.sh` (the script keeps the `unprocessed/` subfolder it creates), and the playlist downloads run sequentially in manifest order.
 
-## `scraper.py`
+## `scraper.sh`
 
-Purpose: generate a `playlist.json` for each playlist in `manifest.json` using `spotifyscraper`. The JSON is written into the playlist root directory (i.e., alongside `unprocessed/`).
+Purpose: scrape `playlist.json` from Spotify, convert it into `playlist.sync.spotdl` + `playlist.download.spotdl`, and generate a comparison report in `reports/scraper.html`.
 
 Usage:
 ```
-python3 scraper.py --manifest manifest.json
+./scraper.sh --manifest manifest.json
 ```
 
 Options:
 | Option | Description |
 |--------|-------------|
 | `--manifest <FILE>` | manifest JSON file path (default `manifest.json`) |
-| `--output-name <NAME>` | output filename under each playlist root (default `playlist.json`) |
-
-## `convert.py`
-
-Purpose: convert each scraped `playlist.json` (from `scraper.py`) into a `playlist.sync.spotdl` file that `spotdl sync` can consume later. This leaves `playlist.json` untouched and writes the sync file into the playlist root directory.
-
-Usage:
-```
-python3 convert.py --manifest manifest.json
-```
-
-Outputs:
-- `<PLAYLIST_ROOT>/playlist.sync.spotdl`: sync state for `spotdl sync` (will refetch playlist from Spotify).
-- `<PLAYLIST_ROOT>/playlist.download.spotdl`: a song-list file for `spotdl download` (avoids Spotify playlist sync calls).
-
-Options:
-| Option | Description |
-|--------|-------------|
-| `--manifest <FILE>` | manifest JSON file path (default `manifest.json`) |
-| `--playlist-json-name <NAME>` | filename to search for under each root (default `playlist.json`) |
+| `--playlist-json-name <NAME>` | output filename under each playlist root (default `playlist.json`) |
 | `--sync-name <NAME>` | output filename under each root (default `playlist.sync.spotdl`) |
 | `--download-name <NAME>` | output filename under each root (default `playlist.download.spotdl`) |
+| `--report <HTML>` | report output path (default `reports/scraper.html`) |
+| `--no-report` | skip report generation |
 
 ## `demucs.sh`
 

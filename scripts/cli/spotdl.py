@@ -12,7 +12,7 @@ from scripts.spotdl.runner import run_spotdl_with_retry_wait_guard
 
 def _print_usage(script_name: str) -> None:
     print(
-        f"Usage: {script_name} [--manifest <MANIFEST_FILE>] [--sync-file <FILE>] [--delay <SECONDS>] [--max-retries <N>] | <PLAYLIST_URL> <PLAYLIST_TARGET_DIR>",
+        f"Usage: {script_name} [--manifest <MANIFEST_FILE>] [--select] [--sync-file <FILE>] [--delay <SECONDS>] [--max-retries <N>] | <PLAYLIST_URL> <PLAYLIST_TARGET_DIR>",
         file=sys.stderr,
     )
 
@@ -20,6 +20,7 @@ def _print_usage(script_name: str) -> None:
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--manifest")
+    parser.add_argument("--select", action="store_true")
     parser.add_argument("--sync-file", default="playlist.sync.spotdl")
     parser.add_argument("--delay", default="2")
     parser.add_argument("--max-retries", default="5")
@@ -31,6 +32,26 @@ def _parse_args() -> argparse.Namespace:
         _print_usage(Path(sys.argv[0]).name)
         raise SystemExit(1)
     return args
+
+
+def _select_entry(entries: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    print("Select a playlist to run:")
+    for idx, (url, root) in enumerate(entries, start=1):
+        print(f"{idx}) {root} - {url}")
+
+    while True:
+        choice = input("Enter a number (or press Enter to cancel): ").strip()
+        if choice == "":
+            print("No selection made; exiting.")
+            raise SystemExit(1)
+        try:
+            index = int(choice)
+        except ValueError:
+            print("Please enter a valid number.")
+            continue
+        if 1 <= index <= len(entries):
+            return [entries[index - 1]]
+        print(f"Enter a number between 1 and {len(entries)}.")
 
 
 def _coerce_int(value: str, name: str, min_value: int | None = None) -> int:
@@ -51,6 +72,10 @@ def main() -> int:
 
     if args.manifest and (args.playlist_url or args.root):
         print("Cannot mix manifest mode with positional arguments", file=sys.stderr)
+        return 1
+
+    if args.select and not args.manifest:
+        print("--select requires --manifest", file=sys.stderr)
         return 1
 
     if not args.manifest and (not args.playlist_url or not args.root):
@@ -74,6 +99,8 @@ def main() -> int:
         entries = parse_manifest(args.manifest)
         if not entries:
             raise SystemExit(f"Manifest file contains no playlist entries: {args.manifest}")
+        if args.select:
+            entries = _select_entry(entries)
     else:
         entries = [(args.playlist_url, args.root)]
 

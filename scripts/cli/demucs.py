@@ -80,7 +80,7 @@ def main() -> int:
         mp3_list = [
             os.path.join(base_dir, f)
             for f in os.listdir(base_dir)
-            if f.lower().endswith(".mp3")
+            if f.lower().endswith(".mp3") and not f.startswith("._")
         ]
         root_contexts.append(RootContext(root_abs, base_dir, all_dir, vocals_dir))
         root_mp3s[root_abs] = mp3_list
