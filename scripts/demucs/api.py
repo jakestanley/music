@@ -1,5 +1,6 @@
 import os
 import shutil
+import sys
 import tempfile
 import time
 import zipfile
@@ -12,6 +13,10 @@ import requests
 from scripts.core.paths import ensure_dir
 from scripts.upsnap.batch import ensure_awake as ensure_upsnap_awake
 from scripts.upsnap.batch import require_ready as require_upsnap_ready
+
+
+def _log(message: str) -> None:
+    print(message, file=sys.stderr, flush=True)
 
 
 @dataclass
@@ -211,10 +216,12 @@ def run_windows(
     ]
 
     if not missing_files:
-        print(f"All requested stems exist for {ctx.root}; skipping remote run.")
+        _log(f"All requested stems exist for {ctx.root}; skipping remote run.")
         return
 
+    _log("Checking/waking UpSnap target...")
     ensure_upsnap_awake()
+    _log("UpSnap check complete.")
 
     total_batches = (len(missing_files) + batch_size - 1) // batch_size
     batch_start = 0
@@ -229,8 +236,10 @@ def run_windows(
         if not batch_files:
             continue
 
+        _log(f"Batch {batch_index}/{total_batches}: verifying UpSnap ready...")
         require_upsnap_ready()
-        print(f"Batch {batch_index}/{total_batches}: submitting {len(batch_files)} files to {base_url}")
+        _log(f"Batch {batch_index}/{total_batches}: UpSnap ready.")
+        _log(f"Batch {batch_index}/{total_batches}: submitting {len(batch_files)} files to {base_url}")
         job_name = f"{Path(ctx.root).name} batch {batch_index}/{total_batches}"
         try:
             _run_one_batch(
@@ -244,16 +253,16 @@ def run_windows(
                 poll_seconds=poll_seconds,
                 timeout_seconds=timeout_seconds,
             )
-            print(f"Batch {batch_index}/{total_batches}: output downloaded and installed.")
+            _log(f"Batch {batch_index}/{total_batches}: output downloaded and installed.")
             continue
         except SystemExit as exc:
             if not _is_invalid_mp3_error(exc):
                 raise
             if len(batch_files) == 1:
                 skipped_invalid += 1
-                print(f"Skipping invalid MP3: {batch_files[0]}")
+                _log(f"Skipping invalid MP3: {batch_files[0]}")
                 continue
-            print("Batch rejected due to invalid MP3 data; retrying files individually.")
+            _log("Batch rejected due to invalid MP3 data; retrying files individually.")
 
         for file_path in batch_files:
             single_job_name = f"{Path(ctx.root).name} file {Path(file_path).name}"
@@ -269,13 +278,13 @@ def run_windows(
                     poll_seconds=poll_seconds,
                     timeout_seconds=timeout_seconds,
                 )
-                print(f"Processed: {file_path}")
+                _log(f"Processed: {file_path}")
             except SystemExit as exc:
                 if _is_invalid_mp3_error(exc):
                     skipped_invalid += 1
-                    print(f"Skipping invalid MP3: {file_path}")
+                    _log(f"Skipping invalid MP3: {file_path}")
                     continue
                 raise
 
     if skipped_invalid:
-        print(f"Done with warnings: skipped {skipped_invalid} invalid MP3 file(s).")
+        _log(f"Done with warnings: skipped {skipped_invalid} invalid MP3 file(s).")

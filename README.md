@@ -237,12 +237,13 @@ Purpose: separate each MP3 in `<PLAYLIST_TARGET_DIR>/unprocessed` into Demucs ou
 
 Usage:
 ```
-./demucs.sh [--manifest manifest.json] [--api] [--clean] <PLAYLIST_TARGET_DIR...> [4|2|both]
+./demucs.sh [--manifest manifest.json] [--select] [--api] [--clean] <PLAYLIST_TARGET_DIR...> [4|2|both]
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--manifest <FILE>` | Read playlist roots from a manifest (same fields as spotdl). |
+| `--select` | Interactively choose one playlist from the manifest. |
 | `--report <HTML>` | report output path (default `reports/demucs.html`) |
 | `--no-report` | skip report generation |
 | `<PLAYLIST_TARGET_DIR>` | base path where the script stores `unprocessed/`, `all/`, and `vocals/` outputs |

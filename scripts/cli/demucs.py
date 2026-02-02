@@ -17,6 +17,11 @@ from scripts.upsnap.batch import sleep_if_awake, validate_upsnap_env
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", help="Path to manifest JSON; roots will be read from it.")
+    parser.add_argument(
+        "--select",
+        action="store_true",
+        help="Interactively choose a single playlist from the manifest instead of running all.",
+    )
     parser.add_argument("--clean", action="store_true")
     parser.add_argument("--api", action="store_true", help="Use the Demucs HTTP API instead of local execution.")
     parser.add_argument("--report", default=None, help="Write HTML report path (default: reports/demucs.html).")
@@ -32,15 +37,24 @@ def _find_stem_dir(stem_root: str, candidates: List[str]) -> str | None:
     return None
 
 
-def _load_roots_from_manifest(manifest_path: str) -> List[str]:
-    entries: List[Tuple[str, str]] = parse_manifest(manifest_path)
-    roots: List[str] = []
-    seen = set()
-    for _, root in entries:
-        if root not in seen:
-            roots.append(root)
-            seen.add(root)
-    return roots
+def _select_entry(entries: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
+    print("Select a playlist to run:")
+    for idx, (url, root) in enumerate(entries, start=1):
+        print(f"{idx}) {root} - {url}")
+
+    while True:
+        choice = input("Enter a number (or press Enter to cancel): ").strip()
+        if choice == "":
+            print("No selection made; exiting.")
+            raise SystemExit(1)
+        try:
+            index = int(choice)
+        except ValueError:
+            print("Please enter a valid number.")
+            continue
+        if 1 <= index <= len(entries):
+            return [entries[index - 1]]
+        print(f"Enter a number between 1 and {len(entries)}.")
 
 
 def main() -> int:
@@ -55,7 +69,12 @@ def main() -> int:
     mode = "both"
     roots: List[str] = []
     if args.manifest:
-        roots.extend(_load_roots_from_manifest(args.manifest))
+        entries = parse_manifest(args.manifest)
+        if args.select:
+            entries = _select_entry(entries)
+        roots.extend([root for _, root in entries])
+    elif args.select:
+        raise SystemExit("--select requires --manifest")
     roots.extend(list(args.roots))
 
     if roots:
