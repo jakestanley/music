@@ -24,6 +24,17 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--clean", action="store_true")
     parser.add_argument("--api", action="store_true", help="Use the Demucs HTTP API instead of local execution.")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="With --api, print the batches and payload details without sending requests.",
+    )
+    parser.add_argument(
+        "--api-max-batches",
+        type=int,
+        default=None,
+        help="With --api, process at most this many batches (debug aid).",
+    )
     parser.add_argument("--report", default=None, help="Write HTML report path (default: reports/demucs.html).")
     parser.add_argument("--no-report", action="store_true", help="Skip HTML report generation.")
     parser.add_argument("roots", nargs="*")
@@ -34,6 +45,9 @@ def _find_stem_dir(stem_root: str, candidates: List[str]) -> str | None:
     for candidate in candidates:
         if os.path.isfile(os.path.join(stem_root, candidate, "vocals.wav")):
             return os.path.join(stem_root, candidate)
+        # Some API outputs keep the source extension in the folder name.
+        if os.path.isfile(os.path.join(stem_root, f"{candidate}.mp3", "vocals.wav")):
+            return os.path.join(stem_root, f"{candidate}.mp3")
     return None
 
 
@@ -65,6 +79,13 @@ def main() -> int:
 
     if args.api:
         validate_upsnap_env()
+    elif args.dry_run:
+        raise SystemExit("--dry-run requires --api")
+    elif args.api_max_batches is not None:
+        raise SystemExit("--api-max-batches requires --api")
+
+    if args.api_max_batches is not None and args.api_max_batches < 1:
+        raise SystemExit("--api-max-batches must be >= 1")
 
     mode = "both"
     roots: List[str] = []
@@ -205,7 +226,7 @@ def main() -> int:
 
             demucs_model = os.environ.get("DEMUCS_MODEL", "htdemucs")
             if args.api:
-                run_windows(ctx, missing_files, mode, args.clean)
+                run_windows(ctx, missing_files, mode, args.clean, args.dry_run, args.api_max_batches)
             else:
                 run_local(missing_files, mode, demucs_model, ctx.base_dir, ctx.all_dir, ctx.vocals_dir)
 
