@@ -9,6 +9,7 @@ from scripts.demucs.cache import HashCache
 from scripts.demucs.hashing import get_file_hash
 from scripts.demucs.local import run_local
 from scripts.demucs.api import RootContext, normalize_windows_name, run_windows
+from scripts.report.demucs_report import write_demucs_report
 from scripts.spotdl.manifest import parse_manifest
 from scripts.upsnap.batch import sleep_if_awake, validate_upsnap_env
 
@@ -18,6 +19,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--manifest", help="Path to manifest JSON; roots will be read from it.")
     parser.add_argument("--clean", action="store_true")
     parser.add_argument("--api", action="store_true", help="Use the Demucs HTTP API instead of local execution.")
+    parser.add_argument("--report", default=None, help="Write HTML report path (default: reports/demucs.html).")
+    parser.add_argument("--no-report", action="store_true", help="Skip HTML report generation.")
     parser.add_argument("roots", nargs="*")
     return parser.parse_args()
 
@@ -62,7 +65,9 @@ def main() -> int:
             roots = roots[:-1]
 
     if not roots:
-        raise SystemExit("Usage: demucs [--manifest FILE] [--api] [--clean] <ROOT_DIR...> [4|2|both]")
+        raise SystemExit(
+            "Usage: demucs [--manifest FILE] [--api] [--clean] [--report HTML] [--no-report] <ROOT_DIR...> [4|2|both]"
+        )
 
     root_contexts: List[RootContext] = []
     root_mp3s: Dict[str, List[str]] = {}
@@ -124,7 +129,6 @@ def main() -> int:
         caches[ctx.root].save()
         print(f"Indexed {len(mp3_list)} hashes for {ctx.root}.")
 
-    all_ok = False
     try:
         for ctx in root_contexts:
             mp3_list = root_mp3s[ctx.root]
@@ -187,10 +191,14 @@ def main() -> int:
                 run_local(missing_files, mode, demucs_model, ctx.base_dir, ctx.all_dir, ctx.vocals_dir)
 
             caches[ctx.root].save()
-        all_ok = True
     finally:
         if args.api:
             sleep_if_awake()
+
+    if not args.no_report:
+        report_path = Path(args.report) if args.report else (repo_root / "reports" / "demucs.html")
+        write_demucs_report([ctx.root for ctx in root_contexts], mode, report_path)
+        print(f"Report written to {report_path}")
 
     return 0
 

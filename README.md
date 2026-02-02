@@ -243,6 +243,8 @@ Usage:
 | Option | Description |
 |--------|-------------|
 | `--manifest <FILE>` | Read playlist roots from a manifest (same fields as spotdl). |
+| `--report <HTML>` | report output path (default `reports/demucs.html`) |
+| `--no-report` | skip report generation |
 | `<PLAYLIST_TARGET_DIR>` | base path where the script stores `unprocessed/`, `all/`, and `vocals/` outputs |
 | `[4|2|both]` | decide whether to produce only the four-stem directories, only the two-stem vocal isolations, or both |
 
