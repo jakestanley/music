@@ -150,6 +150,34 @@ def _extract_outputs(zip_path: Path, ctx: RootContext, mode: str) -> None:
                 _copy_stem_dir(stem_dir, ctx.vocals_dir)
 
 
+def _is_invalid_mp3_error(exc: SystemExit) -> bool:
+    return "Invalid mp3 data" in str(exc)
+
+
+def _run_one_batch(
+    base_url: str,
+    ctx: RootContext,
+    batch_files: List[str],
+    mode: str,
+    model: str,
+    job_name: str,
+    verify: str | bool,
+    poll_seconds: float,
+    timeout_seconds: float,
+) -> None:
+    job_id = _submit_job(base_url, batch_files, mode, model, job_name, verify)
+    job = _wait_for_job(base_url, job_id, poll_seconds, timeout_seconds, verify)
+    status = job.get("status")
+    if status != "succeeded":
+        message = job.get("message") or job.get("error") or "unknown error"
+        raise SystemExit(f"Demucs API job failed: {job_id} ({message})")
+
+    with tempfile.TemporaryDirectory(prefix="demucs_api_zip_") as tmp_zip_dir:
+        zip_path = Path(tmp_zip_dir) / f"{job_id}.zip"
+        _download_output(base_url, job_id, zip_path, verify)
+        _extract_outputs(zip_path, ctx, mode)
+
+
 def run_windows(
     ctx: RootContext,
     missing_files: List[str],
@@ -191,6 +219,7 @@ def run_windows(
     total_batches = (len(missing_files) + batch_size - 1) // batch_size
     batch_start = 0
     batch_index = 0
+    skipped_invalid = 0
 
     while batch_start < len(missing_files):
         batch_index += 1
@@ -203,18 +232,50 @@ def run_windows(
         require_upsnap_ready()
         print(f"Batch {batch_index}/{total_batches}: submitting {len(batch_files)} files to {base_url}")
         job_name = f"{Path(ctx.root).name} batch {batch_index}/{total_batches}"
-        job_id = _submit_job(base_url, batch_files, mode, model, job_name, verify)
-        print(f"Batch {batch_index}/{total_batches}: job {job_id} submitted.")
+        try:
+            _run_one_batch(
+                base_url=base_url,
+                ctx=ctx,
+                batch_files=batch_files,
+                mode=mode,
+                model=model,
+                job_name=job_name,
+                verify=verify,
+                poll_seconds=poll_seconds,
+                timeout_seconds=timeout_seconds,
+            )
+            print(f"Batch {batch_index}/{total_batches}: output downloaded and installed.")
+            continue
+        except SystemExit as exc:
+            if not _is_invalid_mp3_error(exc):
+                raise
+            if len(batch_files) == 1:
+                skipped_invalid += 1
+                print(f"Skipping invalid MP3: {batch_files[0]}")
+                continue
+            print("Batch rejected due to invalid MP3 data; retrying files individually.")
 
-        job = _wait_for_job(base_url, job_id, poll_seconds, timeout_seconds, verify)
-        status = job.get("status")
-        if status != "succeeded":
-            message = job.get("message") or job.get("error") or "unknown error"
-            raise SystemExit(f"Demucs API job failed: {job_id} ({message})")
+        for file_path in batch_files:
+            single_job_name = f"{Path(ctx.root).name} file {Path(file_path).name}"
+            try:
+                _run_one_batch(
+                    base_url=base_url,
+                    ctx=ctx,
+                    batch_files=[file_path],
+                    mode=mode,
+                    model=model,
+                    job_name=single_job_name,
+                    verify=verify,
+                    poll_seconds=poll_seconds,
+                    timeout_seconds=timeout_seconds,
+                )
+                print(f"Processed: {file_path}")
+            except SystemExit as exc:
+                if _is_invalid_mp3_error(exc):
+                    skipped_invalid += 1
+                    print(f"Skipping invalid MP3: {file_path}")
+                    continue
+                raise
 
-        with tempfile.TemporaryDirectory(prefix="demucs_api_zip_") as tmp_zip_dir:
-            zip_path = Path(tmp_zip_dir) / f"{job_id}.zip"
-            _download_output(base_url, job_id, zip_path, verify)
-            _extract_outputs(zip_path, ctx, mode)
-
-        print(f"Batch {batch_index}/{total_batches}: output downloaded and installed.")
+    if skipped_invalid:
+        print(f"Done with warnings: skipped {skipped_invalid} invalid MP3 file(s).")

@@ -13,13 +13,22 @@ from scripts.core.env import load_env, require_vars
 from scripts.core.paths import ensure_dir, resolve_dir
 from scripts.spotdl.errors import summarize_errors
 from scripts.spotdl.manifest import parse_manifest
-from scripts.report.html_report import generate_report, write_html_report
+from scripts.report.html_report import (
+    classify_tracks,
+    generate_report,
+    list_audio_files,
+    load_fallback_errors,
+    load_fallback_success,
+    load_spotdl_errors,
+    load_tracks,
+    write_html_report,
+)
 from scripts.spotdl.runner import run_spotdl_with_retry_wait_guard
 
 
 def _print_usage(script_name: str) -> None:
     print(
-        f"Usage: {script_name} [--manifest <MANIFEST_FILE>] [--select] [--sync-file <FILE>] [--delay <SECONDS>] [--max-retries <N>] [--skip-fallback] [--report <HTML>] [--no-report] [--regenerate-report] | <PLAYLIST_URL> <PLAYLIST_TARGET_DIR>",
+        f"Usage: {script_name} [--manifest <MANIFEST_FILE>] [--select] [--sync-file <FILE>] [--delay <SECONDS>] [--max-retries <N>] [--skip-fallback] [--retry-only] [--report <HTML>] [--no-report] [--regenerate-report] | <PLAYLIST_URL> <PLAYLIST_TARGET_DIR>",
         file=sys.stderr,
     )
 
@@ -43,6 +52,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--report", default=None)
     parser.add_argument("--no-report", action="store_true")
     parser.add_argument("--regenerate-report", action="store_true")
+    parser.add_argument("--retry-only", action="store_true")
     parser.add_argument("playlist_url", nargs="?")
     parser.add_argument("root", nargs="?")
     args, extra = parser.parse_known_args()
@@ -80,6 +90,24 @@ def _coerce_int(value: str, name: str, min_value: int | None = None) -> int:
     if min_value is not None and number < min_value:
         raise SystemExit(f"{name} must be an integer >= {min_value}")
     return number
+
+
+def _build_spotdl_args(root_path: str, args: argparse.Namespace, threads: int, max_retries: int) -> list[str]:
+    spotdl_args = [
+        "spotdl",
+        "--client-id",
+        os.environ["SPOTDL_CLIENT_ID"],
+        "--client-secret",
+        os.environ["SPOTDL_CLIENT_SECRET"],
+        "--use-cache-file",
+        "--save-errors",
+        os.path.join(root_path, args.errors_name),
+        "--threads",
+        str(threads),
+    ]
+    if max_retries >= 0:
+        spotdl_args.extend(["--max-retries", str(max_retries)])
+    return spotdl_args
 
 
 _SPOTIFY_TRACK_URL_RE = re.compile(r"https?://open\.spotify\.com/track/([A-Za-z0-9]+)")
@@ -254,6 +282,8 @@ def _run_fallback(entries: list[tuple[str, str]], args: argparse.Namespace) -> i
             continue
 
         failed_ids = _extract_spotify_track_ids(errors_payload)
+        if getattr(args, "_retry_ids", None):
+            failed_ids &= args._retry_ids
         if not failed_ids:
             print(f"Skipping: no Spotify track ids found in {errors_path}", file=sys.stderr)
             continue
@@ -386,7 +416,26 @@ def main() -> int:
     else:
         entries = [(args.playlist_url, args.root)]
 
-    if not args.regenerate_report:
+    retry_ids: set[str] = set()
+    if args.retry_only:
+        require_vars(["SPOTDL_CLIENT_ID", "SPOTDL_CLIENT_SECRET"])
+        threads = _coerce_int(args.threads, "--threads", min_value=1)
+        max_retries = _coerce_int(args.max_retries, "--max-retries")
+    if args.retry_only:
+        for _, root in entries:
+            root_path = Path(root)
+            if not root_path.is_dir():
+                print(f"ERROR: Root directory not found: {root_path}", file=sys.stderr)
+                return 1
+            tracks = load_tracks(root_path, args.download_name, "playlist.json")
+            spotdl_fail_ids = load_spotdl_errors(root_path, args.errors_name)
+            fallback_fail_ids = load_fallback_errors(root_path, args.log_name)
+            fallback_success = load_fallback_success(root_path, args.success_log_name)
+            unprocessed_files = list_audio_files(root_path / "unprocessed")
+            results = classify_tracks(tracks, unprocessed_files, spotdl_fail_ids, fallback_fail_ids, fallback_success)
+            retry_ids |= {r.track.track_id for r in results if r.status in {"missing", "failed"} and r.track.track_id}
+
+    if not args.regenerate_report and not args.retry_only:
         try:
             delay_seconds = float(args.delay)
         except ValueError:
@@ -408,20 +457,7 @@ def main() -> int:
             ensure_dir(base_dir)
             ensure_dir(os.path.dirname(sync_file))
 
-            spotdl_args = [
-                "spotdl",
-                "--client-id",
-                os.environ["SPOTDL_CLIENT_ID"],
-                "--client-secret",
-                os.environ["SPOTDL_CLIENT_SECRET"],
-                "--use-cache-file",
-                "--save-errors",
-                os.path.join(root_path, args.errors_name),
-                "--threads",
-                str(threads),
-            ]
-            if max_retries >= 0:
-                spotdl_args.extend(["--max-retries", str(max_retries)])
+            spotdl_args = _build_spotdl_args(root_path, args, threads, max_retries)
 
             status = 0
             if os.path.isfile(download_file):
@@ -454,6 +490,36 @@ def main() -> int:
 
                 time.sleep(delay_seconds)
 
+        if not args.skip_fallback:
+            fallback_status = _run_fallback(entries, args)
+            if fallback_status != 0:
+                return fallback_status
+
+    if args.retry_only:
+        args._retry_ids = retry_ids
+        for _, root in entries:
+            root_path = resolve_dir(root)
+            if not os.path.isdir(root_path):
+                raise SystemExit(f"Root directory not found: {root}")
+            ensure_dir(os.path.join(root_path, "unprocessed"))
+            download_file = os.path.join(root_path, args.download_name)
+            if not os.path.isfile(download_file):
+                raise SystemExit(f"Missing download list: {download_file}")
+            songs = _load_spotdl_download_file(Path(download_file))
+            filtered = [s for s in songs if isinstance(s.get("song_id"), str) and s["song_id"] in retry_ids]
+            if not filtered:
+                print(f"Skipping retry (no missing/failed tracks): {root_path}", file=sys.stderr)
+                continue
+            tmp_path = Path(download_file).with_suffix(".retry.spotdl")
+            tmp_path.write_text(json.dumps(filtered, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            spotdl_args = _build_spotdl_args(root_path, args, threads, max_retries)
+            status = run_spotdl_with_retry_wait_guard(
+                ["spotdl", "download", str(tmp_path)] + spotdl_args[1:],
+                max_retry_wait_seconds=60,
+                cwd=os.path.join(root_path, "unprocessed"),
+            )
+            if status != 0:
+                return status
         if not args.skip_fallback:
             fallback_status = _run_fallback(entries, args)
             if fallback_status != 0:

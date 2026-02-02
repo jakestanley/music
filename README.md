@@ -181,6 +181,7 @@ Options:
 | `--threads <N>` | number of threads (defaults to `1`; increase if you want more concurrency) |
 | `--max-retries <N>` | increase retries/backoff for transient Spotify 429s (default `5`) |
 | `--skip-fallback` | skip yt-dlp fallback |
+| `--retry-only` | only retry missing/failed tracks (uses the current report classification) |
 | `--report <HTML>` | write report to a custom path (default `reports/spotdl.html`) |
 | `--no-report` | skip report generation |
 | `--regenerate-report` | rebuild the HTML report from existing files without running spotdl/yt-dlp |
