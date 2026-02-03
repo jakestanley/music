@@ -30,7 +30,7 @@ from scripts.spotdl.runner import run_spotdl_with_retry_wait_guard
 
 def _print_usage(script_name: str) -> None:
     print(
-        f"Usage: {script_name} [--manifest <MANIFEST_FILE>] [--select] [--sync-file <FILE>] [--delay <SECONDS>] [--max-retries <N>] [--skip-fallback] [--retry-only] [--report <HTML>] [--no-report] [--regenerate-report] | <PLAYLIST_URL> <PLAYLIST_TARGET_DIR>",
+        f"Usage: {script_name} [--manifest <MANIFEST_FILE>] [--select] [--sync-file <FILE>] [--delay <SECONDS>] [--max-retries <N>] [--skip-fallback] [--retry-only] [--reset-auto-failures] [--report <HTML>] [--no-report] [--regenerate-report] | <PLAYLIST_URL> <PLAYLIST_TARGET_DIR>",
         file=sys.stderr,
     )
 
@@ -52,6 +52,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--truncate-log", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--db", default="state/music.sqlite3")
+    parser.add_argument(
+        "--reset-auto-failures",
+        action="store_true",
+        help="Clear remembered automated fallback failures so yt-dlp auto fallback can be attempted again.",
+    )
     parser.add_argument("--report", default=None)
     parser.add_argument("--no-report", action="store_true")
     parser.add_argument("--regenerate-report", action="store_true")
@@ -419,6 +424,62 @@ def _run_fallback(entries: list[tuple[str, str]], args: argparse.Namespace) -> i
     return overall_exit
 
 
+def _reset_auto_failure_memory(entries: list[tuple[str, str]], args: argparse.Namespace) -> int:
+    overall_exit = 0
+    for _, root in entries:
+        root_path = Path(root)
+        if not root_path.is_dir():
+            print(f"ERROR: Root directory not found: {root_path}", file=sys.stderr)
+            overall_exit = 1
+            continue
+
+        log_path = (root_path / args.log_name).resolve()
+        if not log_path.is_file():
+            continue
+
+        kept_lines: list[str] = []
+        removed = 0
+        for raw_line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                kept_lines.append(line)
+                continue
+            if not isinstance(rec, dict):
+                kept_lines.append(line)
+                continue
+
+            sid = rec.get("spotify_track_id")
+            source = rec.get("source")
+            is_auto_failure = isinstance(sid, str) and sid.strip() and source != "manual_url_fallback"
+            if is_auto_failure:
+                removed += 1
+                continue
+            kept_lines.append(line)
+
+        if removed == 0:
+            continue
+
+        if args.dry_run:
+            print(f"Dry run: would remove {removed} remembered auto-failure record(s) from {log_path}", file=sys.stderr)
+            continue
+
+        try:
+            new_text = "\n".join(kept_lines)
+            if new_text:
+                new_text += "\n"
+            log_path.write_text(new_text, encoding="utf-8")
+            print(f"Reset {removed} remembered auto-failure record(s) in {log_path}", file=sys.stderr)
+        except Exception as exc:
+            print(f"ERROR: failed to rewrite fallback log {log_path}: {exc}", file=sys.stderr)
+            overall_exit = 1
+
+    return overall_exit
+
+
 def _sync_state_db(entries: list[tuple[str, str]], args: argparse.Namespace) -> int:
     db_path = Path(args.db)
     try:
@@ -546,6 +607,10 @@ def main() -> int:
 
                 time.sleep(delay_seconds)
 
+        if args.reset_auto_failures:
+            reset_status = _reset_auto_failure_memory(entries, args)
+            if reset_status != 0:
+                return reset_status
         if not args.skip_fallback:
             fallback_status = _run_fallback(entries, args)
             if fallback_status != 0:
@@ -574,8 +639,14 @@ def main() -> int:
                 max_retry_wait_seconds=60,
                 cwd=os.path.join(root_path, "unprocessed"),
             )
+            for line in summarize_errors(os.path.join(root_path, args.errors_name), str(tmp_path)):
+                print(line)
             if status != 0:
                 return status
+        if args.reset_auto_failures:
+            reset_status = _reset_auto_failure_memory(entries, args)
+            if reset_status != 0:
+                return reset_status
         if not args.skip_fallback:
             fallback_status = _run_fallback(entries, args)
             if fallback_status != 0:

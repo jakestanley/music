@@ -158,6 +158,52 @@ NFS note: I keep a mount on the Mac that points to the server's `Music/Playlists
 4) Download audio: `./spotdl.sh --manifest manifest.json` (prefers `<root>/playlist.download.spotdl` to avoid Spotify playlist sync calls; falls back to sync when missing; runs yt-dlp fallback automatically). This also writes `reports/spotdl.html`.
 5) Manually resolve remaining failures with direct YouTube URLs: `./resolve.sh --manifest manifest.json` (prompts only tracks where spotdl and automated yt-dlp fallback both failed; press Enter to skip and revisit later).
 
+## Operational Scenarios
+
+### Re-attempt auto fallback for previously failed tracks
+
+`--retry-only` does **not** clear remembered auto-failures by itself.  
+Use:
+
+```bash
+./spotdl.sh --manifest manifest.json --retry-only --reset-auto-failures
+```
+
+### Manual resolution queue behavior
+
+- `resolve.sh` prompts tracks in `manual_pending`.
+- Pressing Enter skips for this run only; track stays in queue for next run.
+- Run one playlist at a time with:
+
+```bash
+./resolve.sh --manifest manifest.json --select
+```
+
+### After rebuilding DB from scratch (`migrate --drop-existing`)
+
+If you want immediate manual queue bootstrap from current `auto_failed` rows:
+
+```bash
+python3 - <<'PY'
+import sqlite3, datetime
+conn=sqlite3.connect('state/music.sqlite3')
+now=datetime.datetime.now(datetime.timezone.utc).isoformat()
+conn.execute("UPDATE track_state SET status='manual_pending', updated_at=? WHERE status='auto_failed'", (now,))
+conn.commit()
+print("manual_pending=", conn.execute("SELECT COUNT(*) FROM track_state WHERE status='manual_pending'").fetchone()[0])
+PY
+```
+
+### Demucs API protection for bad matches / long files
+
+- Inputs longer than 20 minutes are skipped before submission by default (`--api-max-duration-seconds 1200`).
+- Failed jobs are logged to `<root>/demucs.errors.jsonl` and processing continues.
+- If server enforces ~3 minute job limit, align client timeout:
+
+```bash
+DEMUCS_API_TIMEOUT_SECS=210 ./demucs.sh --manifest manifest.json --api --api-max-duration-seconds 1200 both
+```
+
 ## `spotdl.sh`
 
 Purpose: keep a Spotify playlist mirrored into an `unprocessed/` folder ready for Demucs, with yt-dlp fallback and a spotdl HTML report.
@@ -186,6 +232,7 @@ Options:
 | `--max-retries <N>` | increase retries/backoff for transient Spotify 429s (default `5`) |
 | `--skip-fallback` | skip yt-dlp fallback |
 | `--retry-only` | only retry missing/failed tracks (uses the current report classification) |
+| `--reset-auto-failures` | clear remembered auto-fallback failures so yt-dlp auto fallback is attempted again |
 | `--report <HTML>` | write report to a custom path (default `reports/spotdl.html`) |
 | `--no-report` | skip report generation |
 | `--regenerate-report` | rebuild the HTML report from existing files without running spotdl/yt-dlp |
