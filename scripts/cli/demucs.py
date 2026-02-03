@@ -8,7 +8,7 @@ from scripts.core.paths import ensure_dir, resolve_dir
 from scripts.demucs.cache import HashCache
 from scripts.demucs.hashing import get_file_hash
 from scripts.demucs.local import run_local
-from scripts.demucs.api import RootContext, normalize_windows_name, run_windows
+from scripts.demucs.api import RootContext, canonical_output_name, normalize_windows_name, run_windows
 from scripts.report.demucs_report import write_demucs_report
 from scripts.spotdl.manifest import parse_manifest
 from scripts.upsnap.batch import sleep_if_awake, validate_upsnap_env
@@ -27,13 +27,19 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="With --api, print the batches and payload details without sending requests.",
+        help="With --api, print planned jobs and payload details without sending requests.",
     )
     parser.add_argument(
-        "--api-max-batches",
+        "--api-max-jobs",
         type=int,
         default=None,
-        help="With --api, process at most this many batches (debug aid).",
+        help="With --api, process at most this many jobs (debug aid).",
+    )
+    parser.add_argument(
+        "--max-files",
+        type=int,
+        default=None,
+        help="Process at most this many input MP3 files per root (debug aid).",
     )
     parser.add_argument("--report", default=None, help="Write HTML report path (default: reports/demucs.html).")
     parser.add_argument("--no-report", action="store_true", help="Skip HTML report generation.")
@@ -42,12 +48,17 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _find_stem_dir(stem_root: str, candidates: List[str]) -> str | None:
+    tried: set[str] = set()
     for candidate in candidates:
-        if os.path.isfile(os.path.join(stem_root, candidate, "vocals.wav")):
-            return os.path.join(stem_root, candidate)
-        # Some API outputs keep the source extension in the folder name.
-        if os.path.isfile(os.path.join(stem_root, f"{candidate}.mp3", "vocals.wav")):
-            return os.path.join(stem_root, f"{candidate}.mp3")
+        for variant in (candidate, normalize_windows_name(candidate), canonical_output_name(candidate)):
+            if not variant:
+                continue
+            for dirname in (variant, f"{variant}.mp3"):
+                if dirname in tried:
+                    continue
+                tried.add(dirname)
+                if os.path.isfile(os.path.join(stem_root, dirname, "vocals.wav")):
+                    return os.path.join(stem_root, dirname)
     return None
 
 
@@ -81,11 +92,13 @@ def main() -> int:
         validate_upsnap_env()
     elif args.dry_run:
         raise SystemExit("--dry-run requires --api")
-    elif args.api_max_batches is not None:
-        raise SystemExit("--api-max-batches requires --api")
+    elif args.api_max_jobs is not None:
+        raise SystemExit("--api-max-jobs requires --api")
 
-    if args.api_max_batches is not None and args.api_max_batches < 1:
-        raise SystemExit("--api-max-batches must be >= 1")
+    if args.api_max_jobs is not None and args.api_max_jobs < 1:
+        raise SystemExit("--api-max-jobs must be >= 1")
+    if args.max_files is not None and args.max_files < 1:
+        raise SystemExit("--max-files must be >= 1")
 
     mode = "both"
     roots: List[str] = []
@@ -111,7 +124,9 @@ def main() -> int:
 
     root_contexts: List[RootContext] = []
     root_mp3s: Dict[str, List[str]] = {}
+    root_mp3_counts: Dict[str, int] = {}
     caches: Dict[str, HashCache] = {}
+    remaining_files = args.max_files
 
     for root in roots:
         if not os.path.isdir(root):
@@ -127,6 +142,14 @@ def main() -> int:
             for f in os.listdir(base_dir)
             if f.lower().endswith(".mp3") and not f.startswith("._")
         ]
+        mp3_list.sort()
+        root_mp3_counts[root_abs] = len(mp3_list)
+        if remaining_files is not None:
+            if remaining_files <= 0:
+                mp3_list = []
+            else:
+                mp3_list = mp3_list[:remaining_files]
+                remaining_files -= len(mp3_list)
         root_contexts.append(RootContext(root_abs, base_dir, all_dir, vocals_dir))
         root_mp3s[root_abs] = mp3_list
 
@@ -170,7 +193,12 @@ def main() -> int:
         print(f"Indexed {len(mp3_list)} hashes for {ctx.root}.")
 
     try:
+        remaining_api_jobs = args.api_max_jobs
         for ctx in root_contexts:
+            if args.api and remaining_api_jobs is not None and remaining_api_jobs <= 0:
+                print(f"Skipping {ctx.root}: --api-max-jobs limit reached.")
+                continue
+
             mp3_list = root_mp3s[ctx.root]
             if not mp3_list:
                 print(f"No MP3 files found in {ctx.base_dir}")
@@ -220,13 +248,21 @@ def main() -> int:
                 if need_all or need_vocals:
                     missing_files.append(path)
 
-            print(
+            summary = (
                 f"Root summary for {ctx.root}: {len(mp3_list)} tracks, {symlinked} symlinked, {len(missing_files)} to process."
             )
+            if args.max_files is not None and len(mp3_list) < root_mp3_counts.get(ctx.root, len(mp3_list)):
+                summary += f" (truncated by --max-files from {root_mp3_counts[ctx.root]} available)"
+            print(summary)
 
             demucs_model = os.environ.get("DEMUCS_MODEL", "htdemucs")
             if args.api:
-                run_windows(ctx, missing_files, mode, args.clean, args.dry_run, args.api_max_batches)
+                jobs_for_root = remaining_api_jobs
+                if jobs_for_root is not None:
+                    jobs_for_root = min(jobs_for_root, len(missing_files))
+                run_windows(ctx, missing_files, mode, args.clean, args.dry_run, jobs_for_root)
+                if remaining_api_jobs is not None and jobs_for_root is not None:
+                    remaining_api_jobs -= jobs_for_root
             else:
                 run_local(missing_files, mode, demucs_model, ctx.base_dir, ctx.all_dir, ctx.vocals_dir)
 
