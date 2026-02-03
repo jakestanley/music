@@ -6,6 +6,7 @@ import datetime as _dt
 import html
 import json
 import re
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence
@@ -391,6 +392,108 @@ def render_html(report_data: dict) -> str:
     )
 
 
+_DB_STATUS_MAP: dict[str, tuple[str, str]] = {
+    "spotdl_ok": ("downloaded", "spotdl"),
+    "auto_ok": ("downloaded", "yt-dlp fallback"),
+    "manual_ok": ("downloaded", "manual URL"),
+    "demucs_done": ("downloaded", "demucs"),
+    "spotdl_failed": ("failed", "spotdl"),
+    "auto_failed": ("failed", "yt-dlp fallback"),
+    "manual_pending": ("failed", "manual queue"),
+    "pending": ("missing", "not found"),
+    "ignored": ("missing", "ignored"),
+}
+
+
+def _from_db_status(status: str) -> tuple[str, str]:
+    return _DB_STATUS_MAP.get(status, ("missing", status))
+
+
+def _generate_report_from_db(
+    manifest_entries: Iterable[tuple[str, str]],
+    manifest_path: Path,
+    db_path: Path,
+) -> dict:
+    entries_data: List[dict] = []
+    generated_at = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        for playlist_url, root_str in manifest_entries:
+            root = Path(root_str).expanduser().resolve()
+            row = conn.execute("SELECT id FROM playlists WHERE root_path = ?", (str(root),)).fetchone()
+            if not row:
+                entries_data.append(
+                    {
+                        "root": str(root),
+                        "playlist_url": playlist_url,
+                        "tracks": [],
+                        "summary": {"total": 0, "downloaded": 0, "failed": 0, "missing": 0},
+                        "orphan_files": [],
+                    }
+                )
+                continue
+
+            playlist_id = int(row["id"])
+            rows = conn.execute(
+                """
+                SELECT
+                  t.id AS track_id,
+                  t.title AS title,
+                  COALESCE(t.primary_artist, 'Unknown Artist') AS primary_artist,
+                  t.spotify_url AS spotify_url,
+                  ts.status AS state_status,
+                  ts.resolved_path AS resolved_path,
+                  ts.last_error AS last_error
+                FROM playlist_tracks pt
+                JOIN tracks t ON t.id = pt.track_id
+                LEFT JOIN track_state ts
+                  ON ts.playlist_id = pt.playlist_id AND ts.track_id = pt.track_id
+                WHERE pt.playlist_id = ? AND pt.active = 1
+                ORDER BY pt.position ASC
+                """,
+                (playlist_id,),
+            ).fetchall()
+
+            results: List[TrackResult] = []
+            for r in rows:
+                mapped_status, source = _from_db_status(str(r["state_status"] or "pending"))
+                files = [str(r["resolved_path"])] if r["resolved_path"] else []
+                notes: List[str] = []
+                if r["last_error"] and mapped_status != "downloaded":
+                    notes.append(str(r["last_error"]))
+                entry = TrackEntry(
+                    name=str(r["title"] or "Unknown Title"),
+                    artists=[str(r["primary_artist"] or "Unknown Artist")],
+                    track_id=str(r["track_id"]) if r["track_id"] else None,
+                    url=str(r["spotify_url"]) if r["spotify_url"] else None,
+                )
+                results.append(TrackResult(track=entry, status=mapped_status, source=source, files=files, notes=notes))
+
+            summary = build_summary(results)
+            unprocessed_files = list_audio_files(root / "unprocessed")
+            matched_files = set(fp for r in results for fp in r.files)
+            orphan_files = [str(fp) for fp in unprocessed_files if str(fp) not in matched_files]
+
+            entries_data.append(
+                {
+                    "root": str(root),
+                    "playlist_url": playlist_url,
+                    "tracks": results,
+                    "summary": summary,
+                    "orphan_files": orphan_files,
+                }
+            )
+    finally:
+        conn.close()
+
+    return {
+        "generated_at": generated_at,
+        "manifest": str(manifest_path),
+        "entries": entries_data,
+    }
+
+
 def generate_report(
     manifest_entries: Iterable[tuple[str, str]],
     manifest_path: Path,
@@ -399,7 +502,15 @@ def generate_report(
     spotdl_errors_name: str = "spotdl.errors.json",
     fallback_errors_name: str = "ytdlp_fallback.errors.jsonl",
     fallback_success_name: str = "ytdlp_fallback.success.jsonl",
+    db_path: Path | None = None,
 ) -> dict:
+    if db_path is not None and db_path.is_file():
+        return _generate_report_from_db(
+            manifest_entries=manifest_entries,
+            manifest_path=manifest_path,
+            db_path=db_path,
+        )
+
     entries_data: List[dict] = []
     generated_at = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 

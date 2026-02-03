@@ -9,35 +9,29 @@ import os
 import shlex
 import subprocess
 import sys
+from collections import defaultdict
 from pathlib import Path
-from typing import Any
 
 from scripts.core.env import load_env
-from scripts.report.html_report import (
-    classify_tracks,
-    list_audio_files,
-    load_fallback_errors,
-    load_fallback_success,
-    load_spotdl_errors,
-    load_tracks,
-)
 from scripts.spotdl.manifest import parse_manifest
+from scripts.state.db import ensure_db
+from scripts.state.planner import ManualResolutionTask, list_manual_resolution_tasks
+from scripts.state.sync import sync_entries_from_legacy
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description=(
-            "Interactively resolve missing tracks with manual YouTube URLs. "
-            "Only prompts for tracks where spotdl and automated fallback both failed."
-        )
+        description="Interactively resolve manual_pending tracks with direct YouTube URLs."
     )
     parser.add_argument("--manifest")
     parser.add_argument("--select", action="store_true")
-    parser.add_argument("--errors-name", default="spotdl.errors.json")
+    parser.add_argument("--db", default="state/music.sqlite3")
     parser.add_argument("--download-name", default="playlist.download.spotdl")
-    parser.add_argument("--audio-format", default="mp3")
+    parser.add_argument("--playlist-json-name", default="playlist.json")
+    parser.add_argument("--errors-name", default="spotdl.errors.json")
     parser.add_argument("--log-name", default="ytdlp_fallback.errors.jsonl")
     parser.add_argument("--success-log-name", default="ytdlp_fallback.success.jsonl")
+    parser.add_argument("--audio-format", default="mp3")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("root", nargs="?")
     args = parser.parse_args()
@@ -70,31 +64,10 @@ def _select_entry(entries: list[tuple[str, str]]) -> list[tuple[str, str]]:
         print(f"Enter a number between 1 and {len(entries)}.")
 
 
-def _load_spotdl_download_file(path: Path) -> list[dict[str, Any]]:
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data, list) or not all(isinstance(x, dict) for x in data):
-        raise ValueError(f"Expected a JSON list of song objects: {path}")
-    return data  # type: ignore[return-value]
-
-
-def _song_query(song: dict[str, Any]) -> str:
-    name = song.get("name")
-    if not isinstance(name, str) or not name.strip():
-        name = "unknown title"
-
-    artists: list[str] = []
-    raw_artists = song.get("artists")
-    if isinstance(raw_artists, list):
-        for a in raw_artists:
-            if isinstance(a, str) and a.strip():
-                artists.append(a.strip())
-    if not artists:
-        artist = song.get("artist")
-        if isinstance(artist, str) and artist.strip():
-            artists = [artist.strip()]
-
-    artist_part = artists[0] if artists else "unknown artist"
-    return f"{artist_part} - {name}"
+def _song_query(artist: str, title: str) -> str:
+    a = artist.strip() if artist.strip() else "unknown artist"
+    t = title.strip() if title.strip() else "unknown title"
+    return f"{a} - {t}"
 
 
 def _run_ytdlp_url_download(
@@ -130,7 +103,7 @@ def _tail(text: str, limit: int) -> str:
     return text[-limit:]
 
 
-def _append_jsonl(path: Path, record: dict[str, Any]) -> None:
+def _append_jsonl(path: Path, record: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         json.dump(record, handle, ensure_ascii=False)
@@ -143,71 +116,22 @@ def _extract_existing_filepaths(text: str) -> list[str]:
         candidate = line.strip()
         if not candidate:
             continue
-        try:
-            p = Path(candidate)
-        except Exception:
-            continue
+        p = Path(candidate)
         if p.is_file():
             paths.append(str(p))
     return paths
 
 
-def _load_success_index(path: Path) -> dict[str, list[str]]:
-    index: dict[str, list[str]] = {}
-    if not path.is_file():
-        return index
-
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rec = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(rec, dict):
-            continue
-        track_id = rec.get("spotify_track_id")
-        if not isinstance(track_id, str) or not track_id.strip():
-            continue
-        filepaths = rec.get("filepaths")
-        if not isinstance(filepaths, list):
-            continue
-        existing = [fp for fp in filepaths if isinstance(fp, str) and Path(fp).is_file()]
-        if existing:
-            index[track_id.strip()] = existing
-    return index
-
-
-def _load_auto_fallback_fail_ids(path: Path) -> set[str]:
-    ids: set[str] = set()
-    if not path.is_file():
-        return ids
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rec = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(rec, dict):
-            continue
-        if rec.get("source") == "manual_url_fallback":
-            continue
-        sid = rec.get("spotify_track_id")
-        if isinstance(sid, str) and sid.strip():
-            ids.add(sid.strip())
-    return ids
-
-
-def _manual_prompt(song: dict[str, Any]) -> str | None:
-    query = _song_query(song)
+def _manual_prompt(task: ManualResolutionTask) -> str | None:
+    query = _song_query(task.primary_artist, task.title)
     print("")
-    print(f"Missing: {query}", file=sys.stderr)
-    spotify_track_url = song.get("url")
-    if isinstance(spotify_track_url, str) and spotify_track_url.strip():
-        print(f"Spotify: {spotify_track_url.strip()}", file=sys.stderr)
+    print(
+        f"Missing: {query} "
+        f"(attempts spotdl/auto/manual={task.attempt_spotdl}/{task.attempt_auto}/{task.attempt_manual})",
+        file=sys.stderr,
+    )
+    if task.spotify_url:
+        print(f"Spotify: {task.spotify_url}", file=sys.stderr)
     try:
         value = input("YouTube URL (press Enter to skip): ").strip()
     except EOFError:
@@ -217,94 +141,77 @@ def _manual_prompt(song: dict[str, Any]) -> str | None:
     return value
 
 
+def _insert_action(conn, task: ManualResolutionTask, outcome: str, details: dict) -> None:
+    conn.execute(
+        """
+        INSERT INTO actions(playlist_id, track_id, action_type, outcome, details_json, created_at)
+        VALUES(?, ?, 'manual_resolve', ?, ?, ?)
+        """,
+        (
+            task.playlist_id,
+            task.track_id,
+            outcome,
+            json.dumps(details, ensure_ascii=False),
+            _utc_now_iso(),
+        ),
+    )
+
+
 def _run_manual_resolution(entries: list[tuple[str, str]], args: argparse.Namespace) -> int:
+    db_path = Path(args.db)
+    roots = [str(Path(root).expanduser().resolve()) for _, root in entries]
     overall_exit = 0
-    for _, root in entries:
-        root_path = Path(root)
-        if not root_path.is_dir():
-            print(f"ERROR: Root directory not found: {root_path}", file=sys.stderr)
-            overall_exit = 1
-            continue
 
-        download_path = (root_path / args.download_name).resolve()
-        output_dir = (root_path / "unprocessed").resolve()
-        success_log_path = (root_path / args.success_log_name).resolve()
-        fallback_log_path = (root_path / args.log_name).resolve()
+    with ensure_db(db_path) as conn:
+        sync_entries_from_legacy(
+            conn,
+            entries,
+            download_name=args.download_name,
+            playlist_json_name=args.playlist_json_name,
+            spotdl_errors_name=args.errors_name,
+            fallback_errors_name=args.log_name,
+            fallback_success_name=args.success_log_name,
+            action_type="resolve_sync",
+        )
+        tasks = list_manual_resolution_tasks(conn, roots=roots)
 
-        tracks = load_tracks(root_path, args.download_name, "playlist.json")
-        if not tracks:
-            print(f"Skipping manual resolution (no tracks found): {root_path}", file=sys.stderr)
-            continue
+        if not tasks:
+            print("Manual resolution: no manual_pending tracks.")
+            return 0
 
-        spotdl_fail_ids = load_spotdl_errors(root_path, args.errors_name)
-        fallback_fail_ids = load_fallback_errors(root_path, args.log_name)
-        auto_fallback_fail_ids = _load_auto_fallback_fail_ids(fallback_log_path)
-        fallback_success = load_fallback_success(root_path, args.success_log_name)
-        unprocessed_files = list_audio_files(root_path / "unprocessed")
-        results = classify_tracks(tracks, unprocessed_files, spotdl_fail_ids, fallback_fail_ids, fallback_success)
+        by_root: dict[str, list[ManualResolutionTask]] = defaultdict(list)
+        for task in tasks:
+            by_root[task.root_path].append(task)
 
-        missing_by_id: dict[str, Any] = {}
-        for r in results:
-            if (
-                r.track.track_id
-                and r.status != "downloaded"
-                and r.track.track_id in spotdl_fail_ids
-                and r.track.track_id in auto_fallback_fail_ids
-            ):
-                missing_by_id[r.track.track_id] = {
-                    "song_id": r.track.track_id,
-                    "name": r.track.name,
-                    "artists": r.track.artists,
-                    "url": r.track.url,
-                }
+        for root_path_str in sorted(by_root.keys()):
+            root_path = Path(root_path_str)
+            output_dir = root_path / "unprocessed"
+            fallback_log_path = root_path / args.log_name
+            success_log_path = root_path / args.success_log_name
+            root_tasks = by_root[root_path_str]
 
-        if not missing_by_id:
-            print(f"Manual resolution: nothing pending for {root_path}", file=sys.stderr)
-            continue
+            print(f"Manual resolution: {root_path} ({len(root_tasks)} songs)", file=sys.stderr)
+            for task in root_tasks:
+                youtube_url = _manual_prompt(task)
+                if youtube_url is None:
+                    _insert_action(conn, task, "skipped", {"reason": "user_skipped"})
+                    continue
 
-        if download_path.is_file():
-            try:
-                songs = _load_spotdl_download_file(download_path)
-                for song in songs:
-                    song_id = song.get("song_id")
-                    if isinstance(song_id, str) and song_id in missing_by_id:
-                        missing_by_id[song_id] = song
-            except Exception as exc:
-                print(f"WARNING: failed to read {download_path}: {exc}", file=sys.stderr)
-
-        success_index = _load_success_index(success_log_path)
-        pending = [song for sid, song in missing_by_id.items() if sid not in success_index]
-        if not pending:
-            print(f"Manual resolution: all pending tracks already downloaded for {root_path}", file=sys.stderr)
-            continue
-
-        print(f"Manual resolution: {root_path} ({len(pending)} songs)", file=sys.stderr)
-
-        for song in pending:
-            spotify_track_id = song.get("song_id")
-            if isinstance(spotify_track_id, str) and spotify_track_id in success_index:
-                continue
-
-            youtube_url = _manual_prompt(song)
-            if youtube_url is None:
-                continue
-
-            code, cmd, stdout, stderr = _run_ytdlp_url_download(
-                youtube_url=youtube_url,
-                output_dir=output_dir,
-                audio_format=args.audio_format,
-                dry_run=args.dry_run,
-            )
-            query = _song_query(song)
-            if code != 0:
-                if not args.dry_run:
-                    try:
+                code, cmd, stdout, stderr = _run_ytdlp_url_download(
+                    youtube_url=youtube_url,
+                    output_dir=output_dir,
+                    audio_format=args.audio_format,
+                    dry_run=args.dry_run,
+                )
+                query = _song_query(task.primary_artist, task.title)
+                if code != 0:
+                    if not args.dry_run:
                         _append_jsonl(
                             fallback_log_path,
                             {
                                 "timestamp": _utc_now_iso(),
-                                "spotify_track_id": spotify_track_id,
-                                "spotify_track_url": song.get("url"),
+                                "spotify_track_id": task.track_id,
+                                "spotify_track_url": task.spotify_url,
                                 "query": query,
                                 "youtube_url": youtube_url,
                                 "source": "manual_url_fallback",
@@ -314,26 +221,35 @@ def _run_manual_resolution(entries: list[tuple[str, str]], args: argparse.Namesp
                                 "stdout_tail": _tail(stdout, 2000),
                             },
                         )
-                    except Exception as exc:
-                        print(f"ERROR: failed to write fallback log {fallback_log_path}: {exc}", file=sys.stderr)
-                print(f"ERROR: manual yt-dlp failed for: {query}", file=sys.stderr)
-                overall_exit = 1
-                continue
-
-            if not args.dry_run:
-                filepaths = _extract_existing_filepaths(stdout)
-                if not filepaths:
-                    print(
-                        f"WARNING: manual resolution succeeded but no output filepath was detected for: {query}",
-                        file=sys.stderr,
+                        conn.execute(
+                            """
+                            UPDATE track_state
+                            SET attempt_manual = attempt_manual + 1,
+                                status = 'manual_pending',
+                                last_error = ?,
+                                updated_at = ?
+                            WHERE playlist_id = ? AND track_id = ?
+                            """,
+                            (_tail(stderr, 4000) or "manual yt-dlp failure", _utc_now_iso(), task.playlist_id, task.track_id),
+                        )
+                    _insert_action(
+                        conn,
+                        task,
+                        "failed",
+                        {"query": query, "youtube_url": youtube_url, "exit_code": code},
                     )
-                try:
+                    print(f"ERROR: manual yt-dlp failed for: {query}", file=sys.stderr)
+                    overall_exit = 1
+                    continue
+
+                filepaths = _extract_existing_filepaths(stdout)
+                if not args.dry_run:
                     _append_jsonl(
                         success_log_path,
                         {
                             "timestamp": _utc_now_iso(),
-                            "spotify_track_id": spotify_track_id,
-                            "spotify_track_url": song.get("url"),
+                            "spotify_track_id": task.track_id,
+                            "spotify_track_url": task.spotify_url,
                             "query": query,
                             "youtube_url": youtube_url,
                             "source": "manual_url_fallback",
@@ -341,14 +257,28 @@ def _run_manual_resolution(entries: list[tuple[str, str]], args: argparse.Namesp
                             "filepaths": filepaths,
                         },
                     )
-                    if isinstance(spotify_track_id, str) and spotify_track_id.strip():
-                        success_index[spotify_track_id.strip()] = filepaths
-                except Exception as exc:
-                    print(f"ERROR: failed to write success log {success_log_path}: {exc}", file=sys.stderr)
-                    overall_exit = 1
-                    continue
+                    resolved_path = filepaths[0] if filepaths else None
+                    conn.execute(
+                        """
+                        UPDATE track_state
+                        SET attempt_manual = attempt_manual + 1,
+                            status = 'manual_ok',
+                            resolved_path = COALESCE(?, resolved_path),
+                            last_error = NULL,
+                            updated_at = ?
+                        WHERE playlist_id = ? AND track_id = ?
+                        """,
+                        (resolved_path, _utc_now_iso(), task.playlist_id, task.track_id),
+                    )
+                _insert_action(
+                    conn,
+                    task,
+                    "succeeded",
+                    {"query": query, "youtube_url": youtube_url, "filepaths": filepaths},
+                )
+                print(f"Downloaded via manual URL: {query}", file=sys.stderr)
 
-            print(f"Downloaded via manual URL: {query}", file=sys.stderr)
+        conn.commit()
 
     return overall_exit
 
@@ -374,3 +304,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

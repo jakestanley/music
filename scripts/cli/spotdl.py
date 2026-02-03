@@ -13,6 +13,8 @@ from scripts.core.env import load_env, require_vars
 from scripts.core.paths import ensure_dir, resolve_dir
 from scripts.spotdl.errors import summarize_errors
 from scripts.spotdl.manifest import parse_manifest
+from scripts.state.db import ensure_db
+from scripts.state.sync import sync_entries_from_legacy
 from scripts.report.html_report import (
     classify_tracks,
     generate_report,
@@ -49,6 +51,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--success-log-name", default="ytdlp_fallback.success.jsonl")
     parser.add_argument("--truncate-log", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--db", default="state/music.sqlite3")
     parser.add_argument("--report", default=None)
     parser.add_argument("--no-report", action="store_true")
     parser.add_argument("--regenerate-report", action="store_true")
@@ -416,6 +419,30 @@ def _run_fallback(entries: list[tuple[str, str]], args: argparse.Namespace) -> i
     return overall_exit
 
 
+def _sync_state_db(entries: list[tuple[str, str]], args: argparse.Namespace) -> int:
+    db_path = Path(args.db)
+    try:
+        with ensure_db(db_path) as conn:
+            summary = sync_entries_from_legacy(
+                conn,
+                entries,
+                download_name=args.download_name,
+                playlist_json_name="playlist.json",
+                spotdl_errors_name=args.errors_name,
+                fallback_errors_name=args.log_name,
+                fallback_success_name=args.success_log_name,
+                action_type="state_sync",
+            )
+        print(
+            f"State DB sync complete: {db_path} "
+            f"(playlists={summary['playlists']}, tracks={summary['tracks']})"
+        )
+        return 0
+    except Exception as exc:
+        print(f"ERROR: failed to sync state DB {db_path}: {exc}", file=sys.stderr)
+        return 1
+
+
 def main() -> int:
     repo_root = Path(__file__).resolve().parents[2]
     load_env(str(repo_root / ".env"))
@@ -554,6 +581,10 @@ def main() -> int:
             if fallback_status != 0:
                 return fallback_status
 
+    sync_status = _sync_state_db(entries, args)
+    if sync_status != 0:
+        return sync_status
+
     if not args.no_report:
         report_path = Path(args.report) if args.report else (repo_root / "reports" / "spotdl.html")
         manifest_path = Path(args.manifest) if args.manifest else Path("manifest.json")
@@ -564,6 +595,7 @@ def main() -> int:
             spotdl_errors_name=args.errors_name,
             fallback_errors_name=args.log_name,
             fallback_success_name=args.success_log_name,
+            db_path=Path(args.db),
         )
         write_html_report(report, report_path)
         print(f"Report written to {report_path}")

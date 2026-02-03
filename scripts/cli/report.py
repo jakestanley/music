@@ -14,6 +14,7 @@ from scripts.spotdl.manifest import parse_manifest
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate an HTML report of playlist download status.")
     parser.add_argument("--manifest", default="manifest.json", help="Path to manifest JSON (default: manifest.json).")
+    parser.add_argument("--db", default="state/music.sqlite3", help="Path to SQLite state DB (default: state/music.sqlite3).")
     parser.add_argument(
         "--playlist-json-name",
         default="playlist.json",
@@ -56,6 +57,7 @@ def main() -> int:
         manifest_path=manifest_path,
         playlist_json_name=args.playlist_json_name,
         download_name=args.download_name,
+        db_path=Path(args.db),
     )
     write_html_report(report, output_path)
     print(f"Report written to {output_path}")
@@ -64,4 +66,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

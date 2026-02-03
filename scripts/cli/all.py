@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import argparse
-import datetime as _dt
 import json
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -13,13 +11,12 @@ from pathlib import Path
 from typing import List, Sequence, Tuple
 
 from scripts.core.env import load_env
-from scripts.report.html_report import generate_report, write_html_report
 from scripts.spotdl.manifest import parse_manifest
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run scraper, convert, spotdl, ytdlp fallback, demucs, then write an HTML report."
+        description="Run scraper, spotdl+fallback, optional demucs, then report generation."
     )
     parser.add_argument("--manifest", default="manifest.json", help="Path to manifest JSON (default: manifest.json).")
     parser.add_argument(
@@ -130,30 +127,24 @@ def main() -> int:
         demucs_cmd = [py, "-m", "scripts.cli.demucs"] + roots + [args.demucs_mode]
         exit_codes.append(run_step("Demucs stems", demucs_cmd))
 
-    timestamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    report_cmd = [
+        py,
+        "-m",
+        "scripts.cli.report",
+        "--manifest",
+        str(manifest_for_commands),
+        "--playlist-json-name",
+        args.playlist_json_name,
+    ]
     if args.report:
-        report_path = Path(args.report)
-    else:
-        report_path = repo_root / "reports" / f"report-{timestamp}.html"
+        report_cmd.extend(["--output", str(args.report)])
+    exit_codes.append(run_step("Generate report", report_cmd))
 
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        report = generate_report(
-            manifest_entries=entries,
-            manifest_path=manifest_path,
-            playlist_json_name=args.playlist_json_name,
-        )
-        write_html_report(report, report_path)
-        latest_path = report_path.parent / "latest.html"
-        shutil.copyfile(report_path, latest_path)
-        print(f"\nReport written to {report_path}")
-        print(f"Latest report copy: {latest_path}")
-    finally:
-        if temp_manifest:
-            try:
-                temp_manifest.unlink()
-            except FileNotFoundError:
-                pass
+    if temp_manifest:
+        try:
+            temp_manifest.unlink()
+        except FileNotFoundError:
+            pass
 
     return 0 if all(code == 0 for code in exit_codes) else 1
 
