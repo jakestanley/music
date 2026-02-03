@@ -121,7 +121,7 @@ def run_spotdl_with_retry_wait_guard(
             if current_song:
                 print(f"ERROR: YT-DLP download failed for {current_song}")
             else:
-                print("ERROR: YT-DLP download failed for unknown song")
+                print("ERROR: YT-DLP download failed (no song context from spotdl output)")
             suppress_next_url = True
             continue
 

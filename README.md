@@ -29,8 +29,12 @@ mkdir -p ~/Music/Playlists/MyPlaylist
 # 4) Download audio + log spotdl errors (includes yt-dlp fallback + reports/spotdl.html).
 ./spotdl.sh --manifest manifest.json
 
+# 5) Optionally resolve failed tracks with manual YouTube URLs.
+./resolve.sh --manifest manifest.json
+
 # 6) Split stems with Demucs (optional).
 ./demucs.sh --manifest manifest.json
+```
 
 ### One-liner (everything + report)
 
@@ -41,7 +45,6 @@ Run the whole pipeline (scrape → convert → spotdl+fallback → demucs) and w
 ```
 
 - Add `--select` to pick one playlist from the manifest interactively (numbered list).
-```
 
 ## Prerequisites
 
@@ -153,6 +156,7 @@ NFS note: I keep a mount on the Mac that points to the server's `Music/Playlists
 1) Populate `manifest.json` with playlist roots and URLs (each `root` must already exist).
 2) Scrape + convert playlist metadata into each root: `./scraper.sh --manifest manifest.json` (writes `<root>/playlist.json`, `<root>/playlist.sync.spotdl`, `<root>/playlist.download.spotdl`, plus `reports/scraper.html`).
 4) Download audio: `./spotdl.sh --manifest manifest.json` (prefers `<root>/playlist.download.spotdl` to avoid Spotify playlist sync calls; falls back to sync when missing; runs yt-dlp fallback automatically). This also writes `reports/spotdl.html`.
+5) Manually resolve remaining failures with direct YouTube URLs: `./resolve.sh --manifest manifest.json` (prompts only tracks where spotdl and automated yt-dlp fallback both failed; press Enter to skip and revisit later).
 
 ## `spotdl.sh`
 
@@ -230,6 +234,27 @@ Options:
 | `--download-name <NAME>` | output filename under each root (default `playlist.download.spotdl`) |
 | `--report <HTML>` | report output path (default `reports/scraper.html`) |
 | `--no-report` | skip report generation |
+
+## `resolve.sh`
+
+Purpose: interactively resolve remaining failed tracks by pasting direct YouTube URLs.
+
+Usage:
+```
+./resolve.sh --manifest manifest.json
+```
+
+Options:
+| Option | Description |
+|--------|-------------|
+| `--manifest <FILE>` | resolve across all playlist roots in the manifest |
+| `--select` | interactively choose one playlist from the manifest |
+| `<PLAYLIST_TARGET_DIR>` | resolve a single root without a manifest |
+
+Behavior:
+- Only prompts tracks where spotdl failed and automated yt-dlp fallback failed.
+- Tracks with any prior automated fallback failure skip auto fallback on future `spotdl.sh` runs and are eligible here immediately.
+- Press Enter to skip a track for this run; it will be prompted again in future runs until resolved.
 
 ## `demucs.sh`
 

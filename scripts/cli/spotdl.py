@@ -253,6 +253,29 @@ def _load_success_index(path: Path) -> dict[str, list[str]]:
     return index
 
 
+def _load_auto_fallback_fail_ids(path: Path) -> set[str]:
+    ids: set[str] = set()
+    if not path.is_file():
+        return ids
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        # Only count failures from the automated yt-dlp search fallback.
+        if rec.get("source") == "manual_url_fallback":
+            continue
+        sid = rec.get("spotify_track_id")
+        if isinstance(sid, str) and sid.strip():
+            ids.add(sid.strip())
+    return ids
+
+
 def _run_fallback(entries: list[tuple[str, str]], args: argparse.Namespace) -> int:
     overall_exit = 0
     for _, root in entries:
@@ -310,6 +333,7 @@ def _run_fallback(entries: list[tuple[str, str]], args: argparse.Namespace) -> i
         fallback_log_path = (root_path / args.log_name).resolve()
         success_log_path = (root_path / args.success_log_name).resolve()
         success_index = _load_success_index(success_log_path)
+        prior_auto_fail_ids = _load_auto_fallback_fail_ids(fallback_log_path)
         if not args.dry_run and args.truncate_log:
             try:
                 fallback_log_path.write_text("", encoding="utf-8")
@@ -324,9 +348,15 @@ def _run_fallback(entries: list[tuple[str, str]], args: argparse.Namespace) -> i
                 isinstance(spotify_track_id, str)
                 and spotify_track_id.strip()
                 and spotify_track_id.strip() in success_index
-            ):
+                ):
                 print(
                     f"Skipping (already downloaded): https://open.spotify.com/track/{spotify_track_id.strip()}",
+                    file=sys.stderr,
+                )
+                continue
+            if isinstance(spotify_track_id, str) and spotify_track_id.strip() in prior_auto_fail_ids:
+                print(
+                    f"Skipping auto fallback (prior auto-failure): https://open.spotify.com/track/{spotify_track_id.strip()}",
                     file=sys.stderr,
                 )
                 continue
@@ -399,7 +429,6 @@ def main() -> int:
     if args.select and not args.manifest:
         print("--select requires --manifest", file=sys.stderr)
         return 1
-
     if not args.manifest and (not args.playlist_url or not args.root):
         _print_usage(Path(sys.argv[0]).name)
         return 1
