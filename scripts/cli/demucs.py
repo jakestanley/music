@@ -36,6 +36,12 @@ def _parse_args() -> argparse.Namespace:
         help="With --api, process at most this many jobs (debug aid).",
     )
     parser.add_argument(
+        "--api-max-duration-seconds",
+        type=float,
+        default=1200.0,
+        help="With --api, skip inputs longer than this duration in seconds (default: 1200 = 20 minutes).",
+    )
+    parser.add_argument(
         "--max-files",
         type=int,
         default=None,
@@ -94,9 +100,13 @@ def main() -> int:
         raise SystemExit("--dry-run requires --api")
     elif args.api_max_jobs is not None:
         raise SystemExit("--api-max-jobs requires --api")
+    elif args.api_max_duration_seconds != 1200.0:
+        raise SystemExit("--api-max-duration-seconds requires --api")
 
     if args.api_max_jobs is not None and args.api_max_jobs < 1:
         raise SystemExit("--api-max-jobs must be >= 1")
+    if args.api_max_duration_seconds <= 0:
+        raise SystemExit("--api-max-duration-seconds must be > 0")
     if args.max_files is not None and args.max_files < 1:
         raise SystemExit("--max-files must be >= 1")
 
@@ -260,7 +270,15 @@ def main() -> int:
                 jobs_for_root = remaining_api_jobs
                 if jobs_for_root is not None:
                     jobs_for_root = min(jobs_for_root, len(missing_files))
-                run_windows(ctx, missing_files, mode, args.clean, args.dry_run, jobs_for_root)
+                run_windows(
+                    ctx,
+                    missing_files,
+                    mode,
+                    args.clean,
+                    args.dry_run,
+                    jobs_for_root,
+                    args.api_max_duration_seconds,
+                )
                 if remaining_api_jobs is not None and jobs_for_root is not None:
                     remaining_api_jobs -= jobs_for_root
             else:

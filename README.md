@@ -269,6 +269,7 @@ Usage:
 |--------|-------------|
 | `--manifest <FILE>` | Read playlist roots from a manifest (same fields as spotdl). |
 | `--select` | Interactively choose one playlist from the manifest. |
+| `--api-max-duration-seconds <N>` | with `--api`, skip files longer than `N` seconds before submission (default `1200` = 20 minutes). |
 | `--report <HTML>` | report output path (default `reports/demucs.html`) |
 | `--no-report` | skip report generation |
 | `<PLAYLIST_TARGET_DIR>` | base path where the script stores `unprocessed/`, `all/`, and `vocals/` outputs |
@@ -287,6 +288,8 @@ The script creates staging directories, runs Demucs as needed, and keeps the tem
   - `DEMUCS_API_POLL_SECS` (default 5)
   - `DEMUCS_API_TIMEOUT_SECS` (default 3600)
 - The API returns a zip of stems; this script unpacks and installs outputs into `all/` and `vocals/`.
+- API jobs that fail are logged to `<root>/demucs.errors.jsonl` and processing continues with remaining files.
+- Files rejected by duration guard are logged to `<root>/demucs.errors.jsonl` with `source=demucs_api_duration_filter`.
 - When multiple roots are provided, the script hashes `unprocessed/` files and symlinks missing stems to matching stems from other roots (saves time + disk).
 
 #### Setup (pipx + Python 3.11 + PyTorch 2.1):

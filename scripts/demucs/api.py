@@ -1,10 +1,13 @@
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
 import zipfile
 from dataclasses import dataclass
+import datetime as _dt
+import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple, TypedDict, cast
 
@@ -17,6 +20,17 @@ from scripts.upsnap.batch import require_ready as require_upsnap_ready
 
 def _log(message: str) -> None:
     print(message, file=sys.stderr, flush=True)
+
+
+def _utc_now_iso() -> str:
+    return _dt.datetime.now(tz=_dt.timezone.utc).isoformat()
+
+
+def _append_jsonl(path: Path, record: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        json.dump(record, handle, ensure_ascii=False)
+        handle.write("\n")
 
 
 class JobResult(TypedDict, total=False):
@@ -313,6 +327,29 @@ def _run_one_file(
         _extract_outputs(zip_path, ctx, mode, track_name)
 
 
+def _probe_duration_seconds(file_path: str) -> float | None:
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        file_path,
+    ]
+    result = subprocess.run(cmd, text=True, capture_output=True)
+    if result.returncode != 0:
+        return None
+    value = (result.stdout or "").strip()
+    if not value:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
 def run_windows(
     ctx: RootContext,
     missing_files: List[str],
@@ -320,6 +357,7 @@ def run_windows(
     clean_windows: bool,
     dry_run: bool = False,
     max_jobs: int | None = None,
+    max_duration_seconds: float = 1200.0,
 ) -> None:
     del clean_windows
     base_url = os.environ.get("DEMUCS_API_URL", "https://demucs.stanley.arpa").rstrip("/")
@@ -340,6 +378,36 @@ def run_windows(
         for path in missing_files
         if path.lower().endswith(".mp3") and not Path(path).name.startswith("._")
     ]
+    errors_log_path = Path(ctx.root) / "demucs.errors.jsonl"
+    accepted_files: List[str] = []
+    skipped_duration = 0
+    for path in missing_files:
+        duration_seconds = _probe_duration_seconds(path)
+        if duration_seconds is None:
+            _log(f"WARNING: could not determine duration, submitting anyway: {Path(path).name}")
+            accepted_files.append(path)
+            continue
+        if duration_seconds > max_duration_seconds:
+            skipped_duration += 1
+            _log(
+                "Skipping over-duration input: "
+                f"{Path(path).name} ({duration_seconds:.1f}s > {max_duration_seconds:.1f}s)"
+            )
+            _append_jsonl(
+                errors_log_path,
+                {
+                    "timestamp": _utc_now_iso(),
+                    "source": "demucs_api_duration_filter",
+                    "file_path": path,
+                    "file_name": Path(path).name,
+                    "duration_seconds": duration_seconds,
+                    "max_duration_seconds": max_duration_seconds,
+                    "error_type": "duration_limit_exceeded",
+                },
+            )
+            continue
+        accepted_files.append(path)
+    missing_files = accepted_files
 
     if not missing_files:
         _log(f"All requested stems exist for {ctx.root}; skipping remote run.")
@@ -364,6 +432,7 @@ def run_windows(
     _log("UpSnap check complete.")
 
     skipped_invalid = 0
+    failed_jobs = 0
     for index, file_path in enumerate(missing_files[:effective_jobs], start=1):
         _log(f"Job {index}/{total_jobs}: verifying UpSnap ready...")
         require_upsnap_ready()
@@ -387,10 +456,42 @@ def run_windows(
             if _is_invalid_mp3_error(exc):
                 skipped_invalid += 1
                 _log(f"Skipping invalid MP3: {file_path}")
+                _append_jsonl(
+                    errors_log_path,
+                    {
+                        "timestamp": _utc_now_iso(),
+                        "source": "demucs_api_job",
+                        "file_path": file_path,
+                        "file_name": Path(file_path).name,
+                        "mode": mode,
+                        "model": model,
+                        "error_type": "invalid_mp3",
+                        "error": str(exc),
+                    },
+                )
                 continue
-            raise
+            failed_jobs += 1
+            _log(f"Job failed, continuing: {Path(file_path).name} ({exc})")
+            _append_jsonl(
+                errors_log_path,
+                {
+                    "timestamp": _utc_now_iso(),
+                    "source": "demucs_api_job",
+                    "file_path": file_path,
+                    "file_name": Path(file_path).name,
+                    "mode": mode,
+                    "model": model,
+                    "error_type": "job_failed",
+                    "error": str(exc),
+                },
+            )
+            continue
 
     if max_jobs is not None and total_jobs > effective_jobs:
         _log(f"Stopping early after {effective_jobs} job(s) (debug limit); {total_jobs - effective_jobs} file(s) not submitted.")
     if skipped_invalid:
         _log(f"Done with warnings: skipped {skipped_invalid} invalid MP3 file(s).")
+    if skipped_duration:
+        _log(f"Done with warnings: skipped {skipped_duration} over-duration file(s).")
+    if failed_jobs:
+        _log(f"Done with warnings: {failed_jobs} API job(s) failed (see {errors_log_path}).")
