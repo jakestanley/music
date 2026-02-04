@@ -179,6 +179,36 @@ Use:
 ./resolve.sh --manifest manifest.json --select
 ```
 
+### Promote `pending` tracks into manual resolution queue
+
+If `spotdl.html` shows only a few missing tracks but `resolve.sh` prompts nothing, move current
+`pending` tracks into `manual_pending` first:
+
+Preferred:
+
+```bash
+./resolve.sh --manifest manifest.json --force
+```
+
+Or manually:
+
+```bash
+python3 - <<'PY'
+import sqlite3, datetime
+conn=sqlite3.connect('state/music.sqlite3')
+now=datetime.datetime.now(datetime.timezone.utc).isoformat()
+conn.execute("UPDATE track_state SET status='manual_pending', updated_at=? WHERE status='pending'", (now,))
+conn.commit()
+print("manual_pending=", conn.execute("SELECT COUNT(*) FROM track_state WHERE status='manual_pending'").fetchone()[0])
+PY
+```
+
+Then run:
+
+```bash
+./resolve.sh --manifest manifest.json
+```
+
 ### After rebuilding DB from scratch (`migrate --drop-existing`)
 
 If you want immediate manual queue bootstrap from current `auto_failed` rows:
@@ -296,10 +326,12 @@ Options:
 |--------|-------------|
 | `--manifest <FILE>` | resolve across all playlist roots in the manifest |
 | `--select` | interactively choose one playlist from the manifest |
+| `--force` | promote `pending` tracks to `manual_pending` before prompting |
 | `<PLAYLIST_TARGET_DIR>` | resolve a single root without a manifest |
 
 Behavior:
 - Only prompts tracks where spotdl failed and automated yt-dlp fallback failed.
+- With `--force`, also includes currently `pending` tracks by promoting them into `manual_pending`.
 - Tracks with any prior automated fallback failure skip auto fallback on future `spotdl.sh` runs and are eligible here immediately.
 - Press Enter to skip a track for this run; it will be prompted again in future runs until resolved.
 

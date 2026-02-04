@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shlex
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -480,16 +481,50 @@ def _reset_auto_failure_memory(entries: list[tuple[str, str]], args: argparse.Na
     return overall_exit
 
 
-def _is_playlist_complete(root_path: Path, args: argparse.Namespace) -> bool:
+def _collect_retry_ids_from_files(root_path: Path, args: argparse.Namespace) -> set[str]:
     tracks = load_tracks(root_path, args.download_name, "playlist.json")
     if not tracks:
-        return False
+        return set()
     spotdl_fail_ids = load_spotdl_errors(root_path, args.errors_name)
     fallback_fail_ids = load_fallback_errors(root_path, args.log_name)
     fallback_success = load_fallback_success(root_path, args.success_log_name)
     unprocessed_files = list_audio_files(root_path / "unprocessed")
     results = classify_tracks(tracks, unprocessed_files, spotdl_fail_ids, fallback_fail_ids, fallback_success)
-    return all(r.status == "downloaded" for r in results)
+    return {r.track.track_id for r in results if r.status in {"missing", "failed"} and r.track.track_id}
+
+
+def _collect_retry_ids_from_db(root_path: Path, db_path: Path) -> set[str] | None:
+    if not db_path.is_file():
+        return None
+    try:
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT id FROM playlists WHERE root_path = ?",
+                (str(root_path.resolve()),),
+            ).fetchone()
+            if not row:
+                return None
+            playlist_id = int(row[0])
+            rows = conn.execute(
+                """
+                SELECT track_id
+                FROM track_state
+                WHERE playlist_id = ?
+                  AND status IN ('pending', 'spotdl_failed', 'auto_failed')
+                """,
+                (playlist_id,),
+            ).fetchall()
+            return {str(r[0]) for r in rows if r and r[0]}
+    except Exception:
+        return None
+
+
+def _write_retry_download_file(download_file: str, retry_ids: set[str]) -> Path:
+    songs = _load_spotdl_download_file(Path(download_file))
+    filtered = [s for s in songs if isinstance(s.get("song_id"), str) and s["song_id"] in retry_ids]
+    tmp_path = Path(download_file).with_suffix(".retry.spotdl")
+    tmp_path.write_text(json.dumps(filtered, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return tmp_path
 
 
 def _sync_state_db(entries: list[tuple[str, str]], args: argparse.Namespace) -> int:
@@ -590,11 +625,19 @@ def main() -> int:
 
             status = 0
             if os.path.isfile(download_file):
-                if _is_playlist_complete(Path(root_path), args):
+                retry_ids = _collect_retry_ids_from_db(Path(root_path), Path(args.db))
+                if retry_ids is not None:
+                    print(f"Using DB retry set: {root_path} ({len(retry_ids)} track(s))", file=sys.stderr)
+                else:
+                    retry_ids = _collect_retry_ids_from_files(Path(root_path), args)
+                    print(f"Using file-scan retry set: {root_path} ({len(retry_ids)} track(s))", file=sys.stderr)
+
+                if not retry_ids:
                     print(f"Skipping spotdl download (already complete): {root_path}", file=sys.stderr)
                     continue
+                retry_file = _write_retry_download_file(download_file, retry_ids)
                 status = run_spotdl_with_retry_wait_guard(
-                    ["spotdl", "download", download_file] + spotdl_args[1:],
+                    ["spotdl", "download", str(retry_file)] + spotdl_args[1:],
                     max_retry_wait_seconds=60,
                     cwd=base_dir,
                 )
@@ -611,7 +654,8 @@ def main() -> int:
                     cwd=base_dir,
                 )
 
-            for line in summarize_errors(os.path.join(root_path, args.errors_name), download_file):
+            error_target = str(retry_file) if os.path.isfile(download_file) else download_file
+            for line in summarize_errors(os.path.join(root_path, args.errors_name), error_target):
                 print(line)
 
             if status != 0:

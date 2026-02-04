@@ -32,6 +32,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--log-name", default="ytdlp_fallback.errors.jsonl")
     parser.add_argument("--success-log-name", default="ytdlp_fallback.success.jsonl")
     parser.add_argument("--audio-format", default="mp3")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Promote current pending tracks to manual_pending before prompting.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("root", nargs="?")
     args = parser.parse_args()
@@ -157,6 +162,24 @@ def _insert_action(conn, task: ManualResolutionTask, outcome: str, details: dict
     )
 
 
+def _promote_pending_to_manual_queue(conn, roots: list[str], dry_run: bool) -> int:
+    if not roots:
+        return 0
+    marks = ",".join("?" for _ in roots)
+    where_clause = f"status = 'pending' AND playlist_id IN (SELECT id FROM playlists WHERE root_path IN ({marks}))"
+    params: list[object] = list(roots)
+    count = int(conn.execute(f"SELECT COUNT(*) FROM track_state WHERE {where_clause}", params).fetchone()[0])
+    if count == 0:
+        return 0
+    if dry_run:
+        return count
+    conn.execute(
+        f"UPDATE track_state SET status = 'manual_pending', updated_at = ? WHERE {where_clause}",
+        [_utc_now_iso(), *params],
+    )
+    return count
+
+
 def _run_manual_resolution(entries: list[tuple[str, str]], args: argparse.Namespace) -> int:
     db_path = Path(args.db)
     roots = [str(Path(root).expanduser().resolve()) for _, root in entries]
@@ -173,6 +196,12 @@ def _run_manual_resolution(entries: list[tuple[str, str]], args: argparse.Namesp
             fallback_success_name=args.success_log_name,
             action_type="resolve_sync",
         )
+        if args.force:
+            promoted = _promote_pending_to_manual_queue(conn, roots, args.dry_run)
+            if args.dry_run:
+                print(f"Dry run: would promote {promoted} pending track(s) to manual_pending.", file=sys.stderr)
+            elif promoted:
+                print(f"Promoted {promoted} pending track(s) to manual_pending.", file=sys.stderr)
         tasks = list_manual_resolution_tasks(conn, roots=roots)
 
         if not tasks:
@@ -304,4 +333,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
