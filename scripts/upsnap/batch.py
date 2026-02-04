@@ -122,19 +122,30 @@ class UpSnapBatchWaker:
     def _headers(self) -> Dict[str, str]:
         return {"Authorization": f"Bearer {self.config.token}"}
 
+    def _get(self, url: str, operation: str, *, params: Optional[Dict[str, str]] = None) -> requests.Response:
+        try:
+            return requests.get(
+                url,
+                headers=self._headers(),
+                params=params,
+                timeout=self.config.request_timeout_seconds,
+                verify=self.config.verify,
+            )
+        except requests.exceptions.ReadTimeout:
+            raise SystemExit(
+                f"UpSnap {operation} timed out after {self.config.request_timeout_seconds:.1f}s "
+                f"(GET {url}). The target may still be asleep or unreachable."
+            )
+        except requests.exceptions.RequestException as exc:
+            raise SystemExit(f"UpSnap {operation} request failed: {exc}")
+
     def resolve_device_id(self) -> str:
         if self._device_id:
             return self._device_id
         log(f"Resolving UpSnap device name: {self.config.device_name}", quiet=False)
         url = f"{self.config.base_url}/api/collections/devices/records"
         params = {"filter": f'name="{self.config.device_name}"'}
-        resp = requests.get(
-            url,
-            headers=self._headers(),
-            params=params,
-            timeout=self.config.request_timeout_seconds,
-            verify=self.config.verify,
-        )
+        resp = self._get(url, "device lookup", params=params)
         if not resp.ok:
             raise SystemExit(f"UpSnap device lookup failed: HTTP {resp.status_code}")
         payload = resp.json()
@@ -153,12 +164,7 @@ class UpSnapBatchWaker:
         device_id = self.resolve_device_id()
         url = f"{self.config.base_url}/api/upsnap/wake/{device_id}"
         log(f"UpSnap wake request issued: GET {url}", quiet=False)
-        resp = requests.get(
-            url,
-            headers=self._headers(),
-            timeout=self.config.request_timeout_seconds,
-            verify=self.config.verify,
-        )
+        resp = self._get(url, "wake")
         if not resp.ok:
             log("UpSnap wake failed", quiet=False)
             raise SystemExit(f"UpSnap wake failed: HTTP {resp.status_code}")
@@ -168,12 +174,7 @@ class UpSnapBatchWaker:
         device_id = self.resolve_device_id()
         url = f"{self.config.base_url}/api/collections/devices/records/{device_id}"
         log(f"UpSnap status request: GET {url}", quiet=False)
-        resp = requests.get(
-            url,
-            headers=self._headers(),
-            timeout=self.config.request_timeout_seconds,
-            verify=self.config.verify,
-        )
+        resp = self._get(url, "status")
         if not resp.ok:
             raise SystemExit(f"UpSnap status failed: HTTP {resp.status_code}")
         try:
@@ -210,12 +211,7 @@ class UpSnapBatchWaker:
         device_id = self.resolve_device_id()
         url = f"{self.config.base_url}/api/upsnap/sleep/{device_id}"
         log(f"UpSnap sleep request issued: GET {url}", quiet=False)
-        resp = requests.get(
-            url,
-            headers=self._headers(),
-            timeout=self.config.request_timeout_seconds,
-            verify=self.config.verify,
-        )
+        resp = self._get(url, "sleep")
         if not resp.ok:
             raise SystemExit(f"UpSnap sleep failed: HTTP {resp.status_code}")
 
