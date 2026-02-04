@@ -480,6 +480,18 @@ def _reset_auto_failure_memory(entries: list[tuple[str, str]], args: argparse.Na
     return overall_exit
 
 
+def _is_playlist_complete(root_path: Path, args: argparse.Namespace) -> bool:
+    tracks = load_tracks(root_path, args.download_name, "playlist.json")
+    if not tracks:
+        return False
+    spotdl_fail_ids = load_spotdl_errors(root_path, args.errors_name)
+    fallback_fail_ids = load_fallback_errors(root_path, args.log_name)
+    fallback_success = load_fallback_success(root_path, args.success_log_name)
+    unprocessed_files = list_audio_files(root_path / "unprocessed")
+    results = classify_tracks(tracks, unprocessed_files, spotdl_fail_ids, fallback_fail_ids, fallback_success)
+    return all(r.status == "downloaded" for r in results)
+
+
 def _sync_state_db(entries: list[tuple[str, str]], args: argparse.Namespace) -> int:
     db_path = Path(args.db)
     try:
@@ -578,6 +590,9 @@ def main() -> int:
 
             status = 0
             if os.path.isfile(download_file):
+                if _is_playlist_complete(Path(root_path), args):
+                    print(f"Skipping spotdl download (already complete): {root_path}", file=sys.stderr)
+                    continue
                 status = run_spotdl_with_retry_wait_guard(
                     ["spotdl", "download", download_file] + spotdl_args[1:],
                     max_retry_wait_seconds=60,
