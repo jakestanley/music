@@ -23,7 +23,7 @@ _TRACK_URI_RE = re.compile(r"^spotify:track:([A-Za-z0-9]+)$")
 
 def _print_usage(script_name: str) -> None:
     print(
-        f"Usage: {script_name} [--manifest <MANIFEST_FILE>] [--playlist-json-name <NAME>] [--sync-name <NAME>] [--download-name <NAME>] [--report <HTML>] [--no-report]",
+        f"Usage: {script_name} [--manifest <MANIFEST_FILE>] [--select] [--playlist-json-name <NAME>] [--sync-name <NAME>] [--download-name <NAME>] [--report <HTML>] [--no-report]",
         file=sys.stderr,
     )
 
@@ -31,6 +31,7 @@ def _print_usage(script_name: str) -> None:
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--manifest", default="manifest.json")
+    parser.add_argument("--select", action="store_true")
     parser.add_argument("--playlist-json-name", default="playlist.json")
     parser.add_argument("--sync-name", default="playlist.sync.spotdl")
     parser.add_argument("--download-name", default="playlist.download.spotdl")
@@ -42,6 +43,26 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         _print_usage(Path(sys.argv[0]).name)
         raise SystemExit(1)
     return args
+
+
+def _select_entry(entries: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    print("Select a playlist to scrape:")
+    for idx, (url, root) in enumerate(entries, start=1):
+        print(f"{idx}) {root} - {url}")
+
+    while True:
+        choice = input("Enter a number (or press Enter to cancel): ").strip()
+        if choice == "":
+            print("No selection made; exiting.")
+            raise SystemExit(1)
+        try:
+            index = int(choice)
+        except ValueError:
+            print("Please enter a valid number.")
+            continue
+        if 1 <= index <= len(entries):
+            return [entries[index - 1]]
+        print(f"Enter a number between 1 and {len(entries)}.")
 
 
 def _client_credentials() -> Tuple[str, str]:
@@ -393,6 +414,9 @@ def main(argv: list[str]) -> int:
     except SystemExit as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
+
+    if args.select:
+        entries = _select_entry(entries)
 
     if not args.regenerate:
         try:

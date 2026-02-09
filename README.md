@@ -306,6 +306,7 @@ Options:
 | Option | Description |
 |--------|-------------|
 | `--manifest <FILE>` | manifest JSON file path (default `manifest.json`) |
+| `--select` | interactively choose one playlist from the manifest |
 | `--playlist-json-name <NAME>` | output filename under each playlist root (default `playlist.json`) |
 | `--sync-name <NAME>` | output filename under each root (default `playlist.sync.spotdl`) |
 | `--download-name <NAME>` | output filename under each root (default `playlist.download.spotdl`) |
