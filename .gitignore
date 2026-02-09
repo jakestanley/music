@@ -17,10 +17,25 @@
 .localized
 .env
 .venv/
+
+# Python build artifacts
+__pycache__/
 **/__pycache__/
 *.pyc
-*/
+
+# Keep scripts tracked but drop their caches
 !scripts/
 !scripts/**
 scripts/**/__pycache__/
 scripts/**/*.pyc
+
+# Other
+Ableton/
+Apple Music/
+Audio Music Apps/
+Guitar Pro/
+GarageBand/
+spleeter/
+reports/
+Music Production
+Music Resources
