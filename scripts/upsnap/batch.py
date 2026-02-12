@@ -1,8 +1,11 @@
 import atexit
+import base64
+import json
 import ipaddress
 import os
 import tempfile
 import time
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
@@ -102,6 +105,59 @@ def _load_config() -> UpSnapConfig:
     )
 
 
+def _debug_enabled() -> bool:
+    return _read_bool_env("UPSNAP_DEBUG")
+
+
+def _summarize_device_names(items: list[dict]) -> str:
+    names: list[str] = []
+    for item in items:
+        name = item.get("name")
+        if isinstance(name, str) and name.strip():
+            names.append(name.strip())
+    if not names:
+        return "[]"
+    names = sorted(set(names))
+    if len(names) > 20:
+        return f"{names[:20]} (+{len(names) - 20} more)"
+    return str(names)
+
+
+def _jwt_expiry_from_env() -> Optional[datetime]:
+    token = os.environ.get("UPSNAP_BEARER_TOKEN", "").strip()
+    if not token:
+        return None
+    parts = token.split(".")
+    if len(parts) != 3:
+        return None
+    payload = parts[1]
+    pad_len = (-len(payload)) % 4
+    payload += "=" * pad_len
+    try:
+        raw = base64.urlsafe_b64decode(payload.encode("utf-8"))
+        data = json.loads(raw.decode("utf-8"))
+    except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    exp = data.get("exp")
+    if not isinstance(exp, (int, float)):
+        return None
+    try:
+        return datetime.fromtimestamp(float(exp), tz=timezone.utc)
+    except (OSError, OverflowError, ValueError):
+        return None
+
+
+def _log_token_expiry_hint() -> None:
+    expiry = _jwt_expiry_from_env()
+    if not expiry:
+        log("UpSnap token may have expired; rotate UPSNAP_BEARER_TOKEN.", quiet=False)
+        return
+    now = datetime.now(timezone.utc)
+    status = "expired" if expiry <= now else "expires"
+    exp_str = expiry.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    log(f"UpSnap token {status} at {exp_str}; rotate UPSNAP_BEARER_TOKEN if needed.", quiet=False)
+
+
 def validate_upsnap_env() -> None:
     _load_config()
 
@@ -145,15 +201,54 @@ class UpSnapBatchWaker:
         log(f"Resolving UpSnap device name: {self.config.device_name}", quiet=False)
         url = f"{self.config.base_url}/api/collections/devices/records"
         params = {"filter": f'name="{self.config.device_name}"'}
+        if _debug_enabled():
+            log(f"UpSnap debug: GET {url} params={params}", quiet=False)
         resp = self._get(url, "device lookup", params=params)
+        if _debug_enabled():
+            log(f"UpSnap debug: status={resp.status_code}", quiet=False)
         if not resp.ok:
             raise SystemExit(f"UpSnap device lookup failed: HTTP {resp.status_code}")
         payload = resp.json()
         items = payload.get("items", [])
         if len(items) != 1:
-            raise SystemExit(
-                f"UpSnap device lookup expected 1 match for {self.config.device_name}; got {len(items)}"
-            )
+            if len(items) == 0:
+                _log_token_expiry_hint()
+            wanted = self.config.device_name.strip().lower()
+            matches = [
+                item
+                for item in items
+                if isinstance(item.get("name"), str) and item["name"].strip().lower() == wanted
+            ]
+            if len(matches) != 1:
+                # Fallback: fetch all devices and perform a case-insensitive match.
+                log("Exact name lookup failed; retrying with case-insensitive scan.", quiet=False)
+                scan_params = {"perPage": "200"}
+                if _debug_enabled():
+                    log(f"UpSnap debug: GET {url} params={scan_params}", quiet=False)
+                resp = self._get(url, "device lookup (scan)", params=scan_params)
+                if _debug_enabled():
+                    log(f"UpSnap debug: status={resp.status_code}", quiet=False)
+                if not resp.ok:
+                    raise SystemExit(f"UpSnap device lookup failed: HTTP {resp.status_code}")
+                payload = resp.json()
+                items = payload.get("items", [])
+                if _debug_enabled():
+                    log(
+                        f"UpSnap debug: devices={len(items)} names={_summarize_device_names(items)}",
+                        quiet=False,
+                    )
+                matches = [
+                    item
+                    for item in items
+                    if isinstance(item.get("name"), str) and item["name"].strip().lower() == wanted
+                ]
+                if len(matches) != 1:
+                    if len(items) == 0:
+                        _log_token_expiry_hint()
+                    raise SystemExit(
+                        f"UpSnap device lookup expected 1 match for {self.config.device_name}; got {len(matches)}"
+                    )
+            items = matches
         device_id = items[0].get("id")
         if not device_id:
             raise SystemExit("UpSnap device lookup missing device id")
