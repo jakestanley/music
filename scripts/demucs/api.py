@@ -16,6 +16,7 @@ import requests
 from scripts.core.paths import ensure_dir
 from scripts.upsnap.batch import ensure_awake as ensure_upsnap_awake
 from scripts.upsnap.batch import require_ready as require_upsnap_ready
+from scripts.upsnap.batch import sleep_if_awake as sleep_upsnap_if_awake
 
 
 def _log(message: str) -> None:
@@ -433,29 +434,46 @@ def run_windows(
 
     skipped_invalid = 0
     failed_jobs = 0
-    for index, file_path in enumerate(missing_files[:effective_jobs], start=1):
-        _log(f"Job {index}/{total_jobs}: verifying UpSnap ready...")
-        require_upsnap_ready()
-        _log(f"Job {index}/{total_jobs}: UpSnap ready.")
-        _log(f"Job {index}/{total_jobs}: submitting {Path(file_path).name} to {base_url}")
-        job_label = f"{Path(ctx.root).name} file {Path(file_path).name}"
-        try:
-            _run_one_file(
-                base_url=base_url,
-                ctx=ctx,
-                file_path=file_path,
-                mode=mode,
-                model=model,
-                verify=verify,
-                poll_seconds=poll_seconds,
-                timeout_seconds=timeout_seconds,
-                job_label=job_label,
-            )
-            _log(f"Job {index}/{total_jobs}: output downloaded and installed.")
-        except SystemExit as exc:
-            if _is_invalid_mp3_error(exc):
-                skipped_invalid += 1
-                _log(f"Skipping invalid MP3: {file_path}")
+    try:
+        for index, file_path in enumerate(missing_files[:effective_jobs], start=1):
+            _log(f"Job {index}/{total_jobs}: verifying UpSnap ready...")
+            require_upsnap_ready()
+            _log(f"Job {index}/{total_jobs}: UpSnap ready.")
+            _log(f"Job {index}/{total_jobs}: submitting {Path(file_path).name} to {base_url}")
+            job_label = f"{Path(ctx.root).name} file {Path(file_path).name}"
+            try:
+                _run_one_file(
+                    base_url=base_url,
+                    ctx=ctx,
+                    file_path=file_path,
+                    mode=mode,
+                    model=model,
+                    verify=verify,
+                    poll_seconds=poll_seconds,
+                    timeout_seconds=timeout_seconds,
+                    job_label=job_label,
+                )
+                _log(f"Job {index}/{total_jobs}: output downloaded and installed.")
+            except SystemExit as exc:
+                if _is_invalid_mp3_error(exc):
+                    skipped_invalid += 1
+                    _log(f"Skipping invalid MP3: {file_path}")
+                    _append_jsonl(
+                        errors_log_path,
+                        {
+                            "timestamp": _utc_now_iso(),
+                            "source": "demucs_api_job",
+                            "file_path": file_path,
+                            "file_name": Path(file_path).name,
+                            "mode": mode,
+                            "model": model,
+                            "error_type": "invalid_mp3",
+                            "error": str(exc),
+                        },
+                    )
+                    continue
+                failed_jobs += 1
+                _log(f"Job failed, continuing: {Path(file_path).name} ({exc})")
                 _append_jsonl(
                     errors_log_path,
                     {
@@ -465,27 +483,14 @@ def run_windows(
                         "file_name": Path(file_path).name,
                         "mode": mode,
                         "model": model,
-                        "error_type": "invalid_mp3",
+                        "error_type": "job_failed",
                         "error": str(exc),
                     },
                 )
                 continue
-            failed_jobs += 1
-            _log(f"Job failed, continuing: {Path(file_path).name} ({exc})")
-            _append_jsonl(
-                errors_log_path,
-                {
-                    "timestamp": _utc_now_iso(),
-                    "source": "demucs_api_job",
-                    "file_path": file_path,
-                    "file_name": Path(file_path).name,
-                    "mode": mode,
-                    "model": model,
-                    "error_type": "job_failed",
-                    "error": str(exc),
-                },
-            )
-            continue
+    finally:
+        _log("All batches complete for playlist; requesting UpSnap sleep.")
+        sleep_upsnap_if_awake()
 
     if max_jobs is not None and total_jobs > effective_jobs:
         _log(f"Stopping early after {effective_jobs} job(s) (debug limit); {total_jobs - effective_jobs} file(s) not submitted.")
