@@ -31,6 +31,11 @@ def _parse_args() -> argparse.Namespace:
         help="Demucs stems to generate: both, 4, 2, or skip (default: both).",
     )
     parser.add_argument(
+        "--api",
+        action="store_true",
+        help="Use the Demucs HTTP API (and UpSnap wake) instead of local execution.",
+    )
+    parser.add_argument(
         "--select",
         action="store_true",
         help="Interactively choose a single playlist from the manifest instead of running all.",
@@ -124,7 +129,10 @@ def main() -> int:
     exit_codes.append(run_step("spotdl download/sync", spotdl_cmd))
 
     if args.demucs_mode != "skip":
-        demucs_cmd = [py, "-m", "scripts.cli.demucs"] + roots + [args.demucs_mode]
+        demucs_cmd = [py, "-m", "scripts.cli.demucs"]
+        if args.api:
+            demucs_cmd.append("--api")
+        demucs_cmd += roots + [args.demucs_mode]
         exit_codes.append(run_step("Demucs stems", demucs_cmd))
 
     report_cmd = [

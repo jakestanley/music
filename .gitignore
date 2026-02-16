@@ -17,6 +17,7 @@
 .localized
 .env
 .venv/
+state/music.sqlite3
 
 # Python build artifacts
 __pycache__/

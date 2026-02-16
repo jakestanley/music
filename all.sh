@@ -10,4 +10,4 @@ fi
 
 "$VENV/bin/pip" install -r "$SCRIPT_DIR/requirements.txt"
 
-exec "$VENV/bin/python" -m scripts.cli.all "$@"
+exec "$VENV/bin/python" -m scripts.cli.all --api "$@"

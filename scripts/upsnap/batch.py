@@ -91,8 +91,8 @@ def _load_config() -> UpSnapConfig:
         tls_mode = "insecure (UPSNAP_INSECURE_TLS)"
 
     poll_seconds = _read_float_env("UPSNAP_STATUS_POLL_SECS", 5.0)
-    timeout_seconds = _read_float_env("UPSNAP_STATUS_TIMEOUT_SECS", 120.0)
-    request_timeout_seconds = _read_float_env("UPSNAP_REQUEST_TIMEOUT_SECS", 10.0)
+    timeout_seconds = _read_float_env("UPSNAP_STATUS_TIMEOUT_SECS", 300.0)
+    request_timeout_seconds = _read_float_env("UPSNAP_REQUEST_TIMEOUT_SECS", 30.0)
     return UpSnapConfig(
         base_url=base_url,
         token=token,

@@ -17,6 +17,7 @@ from scripts.spotdl.manifest import parse_manifest
 from scripts.state.db import ensure_db
 from scripts.state.planner import ManualResolutionTask, list_manual_resolution_tasks
 from scripts.state.sync import sync_entries_from_legacy
+from scripts.ytdlp.tags import sanitize_value, set_id3_tags
 
 
 def _parse_args() -> argparse.Namespace:
@@ -76,8 +77,8 @@ def _song_query(artist: str, title: str) -> str:
 
 
 def _run_ytdlp_url_download(
-    youtube_url: str, output_dir: Path, audio_format: str, dry_run: bool
-) -> tuple[int, list[str], str, str]:
+    youtube_url: str, output_dir: Path, audio_format: str, dry_run: bool, output_basename: str
+) -> tuple[int, list[str], str, str, str]:
     output_dir.mkdir(parents=True, exist_ok=True)
     cmd = [
         "yt-dlp",
@@ -88,14 +89,16 @@ def _run_ytdlp_url_download(
         "--audio-format",
         audio_format,
         "-o",
-        str(output_dir / "%(title)s [%(id)s].%(ext)s"),
+        str(output_dir / f"{output_basename}.%(ext)s"),
         youtube_url,
     ]
     print(f"Running: {shlex.join(cmd)}", file=sys.stderr)
     if dry_run:
-        return 0, cmd, "", ""
+        expected = str(output_dir / f"{output_basename}.{audio_format}")
+        return 0, cmd, "", "", expected
     result = subprocess.run(cmd, text=True, capture_output=True)
-    return result.returncode, cmd, result.stdout or "", result.stderr or ""
+    expected = str(output_dir / f"{output_basename}.{audio_format}")
+    return result.returncode, cmd, result.stdout or "", result.stderr or "", expected
 
 
 def _utc_now_iso() -> str:
@@ -226,11 +229,13 @@ def _run_manual_resolution(entries: list[tuple[str, str]], args: argparse.Namesp
                     _insert_action(conn, task, "skipped", {"reason": "user_skipped"})
                     continue
 
-                code, cmd, stdout, stderr = _run_ytdlp_url_download(
+                output_basename = f"{sanitize_value(task.primary_artist)} - {sanitize_value(task.title)}"
+                code, cmd, stdout, stderr, expected_path = _run_ytdlp_url_download(
                     youtube_url=youtube_url,
                     output_dir=output_dir,
                     audio_format=args.audio_format,
                     dry_run=args.dry_run,
+                    output_basename=output_basename,
                 )
                 query = _song_query(task.primary_artist, task.title)
                 if code != 0:
@@ -272,6 +277,13 @@ def _run_manual_resolution(entries: list[tuple[str, str]], args: argparse.Namesp
                     continue
 
                 filepaths = _extract_existing_filepaths(stdout)
+                if not filepaths and Path(expected_path).is_file():
+                    filepaths = [expected_path]
+                for path in filepaths:
+                    try:
+                        set_id3_tags(path, task.primary_artist, task.title)
+                    except Exception as exc:
+                        print(f"WARNING: failed to set ID3 tags on {path}: {exc}", file=sys.stderr)
                 if not args.dry_run:
                     _append_jsonl(
                         success_log_path,

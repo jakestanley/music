@@ -39,7 +39,7 @@ if [[ "$LOG_PATH" != /* ]]; then
 fi
 mkdir -p "$(dirname "$LOG_PATH")"
 
-CRON_CMD="cd $ROOT_DIR && ./all.sh --manifest $MANIFEST_PATH >> $LOG_PATH 2>&1"
+CRON_CMD="cd $ROOT_DIR && ./all.sh --api --manifest $MANIFEST_PATH >> $LOG_PATH 2>&1"
 CRON_LINE="$CRON_MINUTE $CRON_HOUR $CRON_DOM $CRON_MONTH $CRON_DOW $CRON_CMD # $CRON_TAG"
 
 TMP_CRON=$(mktemp)

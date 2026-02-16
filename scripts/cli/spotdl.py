@@ -16,6 +16,7 @@ from scripts.spotdl.errors import summarize_errors
 from scripts.spotdl.manifest import parse_manifest
 from scripts.state.db import ensure_db
 from scripts.state.sync import sync_entries_from_legacy
+from scripts.ytdlp.tags import sanitize_value, set_id3_tags
 from scripts.report.html_report import (
     classify_tracks,
     generate_report,
@@ -158,7 +159,7 @@ def _load_spotdl_download_file(path: Path) -> list[dict[str, Any]]:
     return data  # type: ignore[return-value]
 
 
-def _song_query(song: dict[str, Any]) -> str:
+def _song_artist_title(song: dict[str, Any]) -> tuple[str, str]:
     name = song.get("name")
     if not isinstance(name, str) or not name.strip():
         name = "unknown title"
@@ -175,12 +176,17 @@ def _song_query(song: dict[str, Any]) -> str:
             artists = [artist.strip()]
 
     artist_part = artists[0] if artists else "unknown artist"
-    return f"{artist_part} - {name}"
+    return artist_part, name
+
+
+def _song_query(song: dict[str, Any]) -> str:
+    artist, title = _song_artist_title(song)
+    return f"{artist} - {title}"
 
 
 def _run_ytdlp_search_download(
-    query: str, output_dir: Path, audio_format: str, dry_run: bool
-) -> tuple[int, list[str], str, str]:
+    query: str, output_dir: Path, audio_format: str, dry_run: bool, output_basename: str
+) -> tuple[int, list[str], str, str, str]:
     output_dir.mkdir(parents=True, exist_ok=True)
     cmd = [
         "yt-dlp",
@@ -193,14 +199,16 @@ def _run_ytdlp_search_download(
         "--audio-format",
         audio_format,
         "-o",
-        str(output_dir / "%(title)s [%(id)s].%(ext)s"),
+        str(output_dir / f"{output_basename}.%(ext)s"),
         query,
     ]
     print(f"Running: {shlex.join(cmd)}", file=sys.stderr)
     if dry_run:
-        return 0, cmd, "", ""
+        expected = str(output_dir / f"{output_basename}.{audio_format}")
+        return 0, cmd, "", "", expected
     result = subprocess.run(cmd, text=True, capture_output=True)
-    return result.returncode, cmd, result.stdout or "", result.stderr or ""
+    expected = str(output_dir / f"{output_basename}.{audio_format}")
+    return result.returncode, cmd, result.stdout or "", result.stderr or "", expected
 
 
 def _utc_now_iso() -> str:
@@ -370,12 +378,15 @@ def _run_fallback(entries: list[tuple[str, str]], args: argparse.Namespace) -> i
                 )
                 continue
 
-            query = _song_query(song)
-            code, cmd, stdout, stderr = _run_ytdlp_search_download(
+            artist, title = _song_artist_title(song)
+            query = f"{artist} - {title}"
+            output_basename = f"{sanitize_value(artist)} - {sanitize_value(title)}"
+            code, cmd, stdout, stderr, expected_path = _run_ytdlp_search_download(
                 query=query,
                 output_dir=output_dir,
                 audio_format=args.audio_format,
                 dry_run=args.dry_run,
+                output_basename=output_basename,
             )
             if code != 0:
                 if not args.dry_run:
@@ -403,6 +414,13 @@ def _run_fallback(entries: list[tuple[str, str]], args: argparse.Namespace) -> i
             else:
                 if not args.dry_run:
                     filepaths = _extract_existing_filepaths(stdout)
+                    if not filepaths and Path(expected_path).is_file():
+                        filepaths = [expected_path]
+                    for path in filepaths:
+                        try:
+                            set_id3_tags(path, artist, title)
+                        except Exception as exc:
+                            print(f"WARNING: failed to set ID3 tags on {path}: {exc}", file=sys.stderr)
                     if filepaths:
                         try:
                             _append_jsonl(
