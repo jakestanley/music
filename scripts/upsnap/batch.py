@@ -90,7 +90,7 @@ def _load_config() -> UpSnapConfig:
         verify = False
         tls_mode = "insecure (UPSNAP_INSECURE_TLS)"
 
-    poll_seconds = _read_float_env("UPSNAP_STATUS_POLL_SECS", 5.0)
+    poll_seconds = _read_float_env("UPSNAP_STATUS_POLL_SECS", 30.0)
     timeout_seconds = _read_float_env("UPSNAP_STATUS_TIMEOUT_SECS", 300.0)
     request_timeout_seconds = _read_float_env("UPSNAP_REQUEST_TIMEOUT_SECS", 30.0)
     return UpSnapConfig(
@@ -342,6 +342,7 @@ def require_ready() -> None:
 def sleep_if_awake() -> None:
     global _wake_success
     if not _wake_success:
+        log("UpSnap sleep skipped: wake was not successful.", quiet=False)
         return
     waker = _get_waker()
     waker.sleep()
