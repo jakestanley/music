@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Tuple
 import requests
 
 from scripts.core.env import load_env
+from scripts.core.logging import log
 from scripts.spotdl.manifest import parse_manifest
 
 SPOTIFY_PLAYLIST_RE = re.compile(r"(playlist/|spotify:playlist:)([A-Za-z0-9]+)")
@@ -22,9 +23,8 @@ _TRACK_URI_RE = re.compile(r"^spotify:track:([A-Za-z0-9]+)$")
 
 
 def _print_usage(script_name: str) -> None:
-    print(
+    log(
         f"Usage: {script_name} [--manifest <MANIFEST_FILE>] [--select] [--playlist-json-name <NAME>] [--sync-name <NAME>] [--download-name <NAME>] [--report <HTML>] [--no-report]",
-        file=sys.stderr,
     )
 
 
@@ -190,7 +190,7 @@ def _format_json_file(path: Path) -> None:
     except FileNotFoundError:
         return
     except Exception as exc:
-        print(f"WARNING: failed to parse JSON for formatting: {path} ({exc})", file=sys.stderr)
+        log(f"WARNING: failed to parse JSON for formatting: {path} ({exc})")
         return
 
     try:
@@ -198,7 +198,7 @@ def _format_json_file(path: Path) -> None:
             json.dump(data, handle, indent=2, ensure_ascii=False)
             handle.write("\n")
     except Exception as exc:
-        print(f"WARNING: failed to write formatted JSON: {path} ({exc})", file=sys.stderr)
+        log(f"WARNING: failed to write formatted JSON: {path} ({exc})")
 
 
 def _track_id_from_track(track: dict[str, Any]) -> str:
@@ -406,13 +406,13 @@ def main(argv: list[str]) -> int:
 
     manifest_path = Path(args.manifest)
     if not manifest_path.is_file():
-        print(f"ERROR: Manifest not found: {manifest_path}", file=sys.stderr)
+        log(f"ERROR: Manifest not found: {manifest_path}")
         return 2
 
     try:
         entries = parse_manifest(str(manifest_path))
     except SystemExit as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        log(f"ERROR: {exc}")
         return 2
 
     if args.select:
@@ -423,30 +423,30 @@ def main(argv: list[str]) -> int:
             client_id, client_secret = _client_credentials()
             token = _get_access_token(client_id, client_secret)
         except SystemExit as exc:
-            print(f"ERROR: {exc}", file=sys.stderr)
+            log(f"ERROR: {exc}")
             return 2
 
         for playlist_url, root in entries:
             root_path = Path(root)
             if not root_path.is_dir():
-                print(f"ERROR: Root directory not found: {root_path}", file=sys.stderr)
+                log(f"ERROR: Root directory not found: {root_path}")
                 return 1
 
             output_path = (root_path / args.playlist_json_name).resolve()
             if output_path.exists():
                 age_seconds = time.time() - output_path.stat().st_mtime
                 if age_seconds < 60:
-                    print(f"Skipping (fresh): {output_path} ({int(age_seconds)}s old)", file=sys.stderr)
+                    log(f"Skipping (fresh): {output_path} ({int(age_seconds)}s old)")
                     _format_json_file(output_path)
                     continue
 
             try:
                 playlist_payload = _fetch_playlist_json(playlist_url, output_path, token)
             except SystemExit as exc:
-                print(f"ERROR: {exc}", file=sys.stderr)
+                log(f"ERROR: {exc}")
                 return 1
             except Exception as exc:
-                print(f"ERROR: failed to fetch playlist {playlist_url}: {exc}", file=sys.stderr)
+                log(f"ERROR: failed to fetch playlist {playlist_url}: {exc}")
                 return 1
 
             _format_json_file(output_path)
@@ -454,29 +454,29 @@ def main(argv: list[str]) -> int:
             try:
                 payload = _build_spotdl_sync_payload(playlist_url, playlist_payload)
             except Exception as exc:
-                print(f"ERROR: {root_path}: {exc}", file=sys.stderr)
+                log(f"ERROR: {root_path}: {exc}")
                 return 1
 
             sync_path = (root_path / args.sync_name).resolve()
             download_path = (root_path / args.download_name).resolve()
             try:
                 track_count = len(payload.get("songs", [])) if isinstance(payload.get("songs"), list) else "?"
-                print(f"Converting: {root_path}", file=sys.stderr)
-                print(f"- Input:  {output_path}", file=sys.stderr)
-                print(f"- Output: {sync_path} ({track_count} tracks)", file=sys.stderr)
+                log(f"Converting: {root_path}")
+                log(f"- Input:  {output_path}")
+                log(f"- Output: {sync_path} ({track_count} tracks)")
                 _write_json(sync_path, payload)
             except Exception as exc:
-                print(f"ERROR: failed to write {sync_path}: {exc}", file=sys.stderr)
+                log(f"ERROR: failed to write {sync_path}: {exc}")
                 return 1
 
             try:
                 songs = payload.get("songs")
                 if not isinstance(songs, list) or not all(isinstance(s, dict) for s in songs):
                     raise ValueError("payload.songs is not a list of song objects")
-                print(f"- Output: {download_path} (song list for `spotdl download`)", file=sys.stderr)
+                log(f"- Output: {download_path} (song list for `spotdl download`)")
                 _write_json_list(download_path, songs)
             except Exception as exc:
-                print(f"ERROR: failed to write {download_path}: {exc}", file=sys.stderr)
+                log(f"ERROR: failed to write {download_path}: {exc}")
                 return 1
 
             time.sleep(1)
