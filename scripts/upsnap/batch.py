@@ -147,15 +147,18 @@ def _jwt_expiry_from_env() -> Optional[datetime]:
         return None
 
 
-def _log_token_expiry_hint() -> None:
+def _token_expiry_hint() -> str:
     expiry = _jwt_expiry_from_env()
     if not expiry:
-        log("UpSnap token may have expired; rotate UPSNAP_BEARER_TOKEN.", quiet=False)
-        return
+        return "token may have expired; rotate UPSNAP_BEARER_TOKEN"
     now = datetime.now(timezone.utc)
     status = "expired" if expiry <= now else "expires"
     exp_str = expiry.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    log(f"UpSnap token {status} at {exp_str}; rotate UPSNAP_BEARER_TOKEN if needed.", quiet=False)
+    return f"token {status} at {exp_str}; rotate UPSNAP_BEARER_TOKEN"
+
+
+def _log_token_expiry_hint() -> None:
+    log(f"UpSnap {_token_expiry_hint()}", quiet=False)
 
 
 def validate_upsnap_env() -> None:
@@ -211,8 +214,6 @@ class UpSnapBatchWaker:
         payload = resp.json()
         items = payload.get("items", [])
         if len(items) != 1:
-            if len(items) == 0:
-                _log_token_expiry_hint()
             wanted = self.config.device_name.strip().lower()
             matches = [
                 item
@@ -243,10 +244,9 @@ class UpSnapBatchWaker:
                     if isinstance(item.get("name"), str) and item["name"].strip().lower() == wanted
                 ]
                 if len(matches) != 1:
-                    if len(items) == 0:
-                        _log_token_expiry_hint()
+                    hint = f" ({_token_expiry_hint()})" if len(items) == 0 else ""
                     raise SystemExit(
-                        f"UpSnap device lookup expected 1 match for {self.config.device_name}; got {len(matches)}"
+                        f"UpSnap device lookup expected 1 match for {self.config.device_name}; got {len(matches)}{hint}"
                     )
             items = matches
         device_id = items[0].get("id")
