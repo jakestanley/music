@@ -65,6 +65,11 @@ def main() -> int:
         default=_STEPS[-1],
         help="Stop after this step (default: demucs). e.g. --until resolve",
     )
+    parser.add_argument(
+        "--demucs-api",
+        action="store_true",
+        help="Use the Demucs HTTP API (with UpSnap wake) instead of local execution.",
+    )
     args = parser.parse_args()
     stop_after = _STEPS.index(args.until)
 
@@ -103,7 +108,9 @@ def main() -> int:
             ("resolve",  [py, str(_ROOT / "resolver.py"),  root]),
             ("download", [py, str(_ROOT / "downloader.py"), root]),
             *([] if args.demucs_mode == "skip" else [
-                ("demucs", [py, str(_ROOT / "demucs.py"), root, args.demucs_mode])
+                ("demucs", [py, str(_ROOT / "demucs.py")]
+                    + (["--api"] if args.demucs_api else [])
+                    + [root, args.demucs_mode])
             ]),
         ]
         for i, (label, cmd) in enumerate(remaining, start=1):
