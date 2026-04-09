@@ -59,7 +59,7 @@ def main() -> int:
     parser.add_argument("--manual", action="store_true", help="Prompt for tracks that couldn't be auto-matched")
     args = parser.parse_args()
 
-    root = Path(args.root)
+    root = Path(args.root).expanduser()
     playlist_state = st.load(root)
     if not playlist_state:
         print(f"ERROR: no state.json found in {root}", file=sys.stderr)

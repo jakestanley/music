@@ -49,7 +49,7 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="Print what would be downloaded without downloading")
     args = parser.parse_args()
 
-    root = Path(args.root)
+    root = Path(args.root).expanduser()
     playlist_state = st.load(root)
     if not playlist_state:
         print(f"ERROR: no state.json found in {root}", file=sys.stderr)
@@ -64,6 +64,7 @@ def main() -> int:
     if not cookie_file:
         print("ERROR: SPOTDL_COOKIE_FILE is not set", file=sys.stderr)
         return 1
+    cookie_file = str(Path(cookie_file).expanduser())
 
     output_dir = root / "unprocessed"
     output_dir.mkdir(parents=True, exist_ok=True)
