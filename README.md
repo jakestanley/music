@@ -17,6 +17,10 @@ rsync -av --delete \
 ## Quick start (end-to-end)
 
 ```bash
+# 0) Initialise and activate venv
+python3 -m venv .venv
+source .venv/bin/activate
+
 # 1) Fill in Spotify creds.
 cp .env.example .env
 
@@ -56,6 +60,8 @@ These scripts assume the following tools are installed and available on your `PA
 - `yt-dlp` and `id3v2` for YouTube downloads + tagging
 - `curl` for UpSnap API calls (Windows offload only)
 - Spotify API creds: set `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` (or reuse `SPOTDL_CLIENT_ID` / `SPOTDL_CLIENT_SECRET`). The scraper now uses the Spotify Web API with pagination, so playlists over 100 tracks are fully ingested.
+- YouTube cookies: `SPOTDL_COOKIE_FILE` must point to a valid Netscape-format cookies file exported from a browser logged into YouTube (e.g. via the **Get cookies.txt LOCALLY** extension). Required to avoid YouTube Music blocks.
+- `node` (v20+) must be on your `PATH`. yt-dlp uses it to solve YouTube's JS signature challenge (`--js-runtime node` is passed automatically).
 
 ## Getting started
 
@@ -268,7 +274,8 @@ Options:
 | `--regenerate-report` | rebuild the HTML report from existing files without running spotdl/yt-dlp |
 
 Setup:
-- Copy `.env.example` to `.env` and fill in `SPOTDL_CLIENT_ID` and `SPOTDL_CLIENT_SECRET`.
+- Copy `.env.example` to `.env` and fill in `SPOTDL_CLIENT_ID`, `SPOTDL_CLIENT_SECRET`, and `SPOTDL_COOKIE_FILE`.
+- `SPOTDL_COOKIE_FILE` is required. Export cookies from a browser logged into YouTube using an extension such as **Get cookies.txt LOCALLY**, save the file (e.g. `~/.config/spotdl/cookies.txt`), and set the path in `.env`. Without valid cookies spotdl will be blocked by YouTube Music and all downloads will fail.
 
 Rate limit tips:
 - Prefer re-running `./spotdl.sh ...` over re-downloading from scratch; the sync file is what keeps API usage low.
