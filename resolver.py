@@ -2,12 +2,15 @@
 Resolve pending tracks in state.json to YouTube URLs using ytmusicapi.
 
 Usage:
-    python resolver.py <root_dir>
+    python resolver.py [--manual] <root_dir>
+
+    --manual  After automatic resolution, prompt for any tracks that couldn't be matched.
 
 Example:
-    python resolver.py "/home/jake/Music/Playlists/BATW Rejects"
+    python resolver.py --manual "/home/jake/Music/Playlists/BATW Rejects"
 """
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -42,12 +45,21 @@ def _search_youtube(yt: YTMusic, artist: str, name: str, duration_ms: int) -> st
     return None
 
 
-def main() -> int:
-    if len(sys.argv) != 2:
-        print(f"Usage: {sys.argv[0]} <root_dir>", file=sys.stderr)
-        return 1
+def _prompt_manual(artist: str, name: str) -> str | None:
+    try:
+        value = input(f"  YouTube URL for {artist} - {name} (Enter to skip): ").strip()
+    except EOFError:
+        return None
+    return value or None
 
-    root = Path(sys.argv[1])
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Resolve pending tracks to YouTube URLs.")
+    parser.add_argument("root", help="Playlist root directory containing state.json")
+    parser.add_argument("--manual", action="store_true", help="Prompt for tracks that couldn't be auto-matched")
+    args = parser.parse_args()
+
+    root = Path(args.root)
     playlist_state = st.load(root)
     if not playlist_state:
         print(f"ERROR: no state.json found in {root}", file=sys.stderr)
@@ -62,7 +74,8 @@ def main() -> int:
     yt = YTMusic()
 
     resolved = 0
-    failed = 0
+    unmatched: list[tuple[str, dict]] = []
+
     for track_id, track in pending:
         artist = track["artist"]
         name = track["name"]
@@ -76,12 +89,26 @@ def main() -> int:
             resolved += 1
         else:
             print("-> no match found")
-            failed += 1
+            unmatched.append((track_id, track))
 
-        st.save(root, playlist_state)  # save after each track so progress isn't lost
+        st.save(root, playlist_state)
 
-    print(f"\nDone: {resolved} resolved, {failed} unmatched")
-    return 0 if failed == 0 else 1
+    if unmatched and args.manual:
+        print(f"\nManually resolving {len(unmatched)} unmatched tracks...")
+        manually_resolved = 0
+        for track_id, track in unmatched:
+            url = _prompt_manual(track["artist"], track["name"])
+            if url:
+                st.update_track(playlist_state, track_id, status="resolved", youtube_url=url)
+                st.save(root, playlist_state)
+                manually_resolved += 1
+        resolved += manually_resolved
+        unmatched_count = len(unmatched) - manually_resolved
+    else:
+        unmatched_count = len(unmatched)
+
+    print(f"\nDone: {resolved} resolved, {unmatched_count} unmatched")
+    return 0 if unmatched_count == 0 else 1
 
 
 if __name__ == "__main__":
