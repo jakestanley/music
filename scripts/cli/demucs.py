@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -9,8 +10,6 @@ from scripts.demucs.cache import HashCache
 from scripts.demucs.hashing import get_file_hash
 from scripts.demucs.local import run_local
 from scripts.demucs.api import RootContext, canonical_output_name, normalize_windows_name, run_windows
-from scripts.report.demucs_report import write_demucs_report
-from scripts.spotdl.manifest import parse_manifest
 from scripts.upsnap.batch import sleep_if_awake, validate_upsnap_env
 
 
@@ -47,8 +46,6 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Process at most this many input MP3 files per root (debug aid).",
     )
-    parser.add_argument("--report", default=None, help="Write HTML report path (default: reports/demucs.html).")
-    parser.add_argument("--no-report", action="store_true", help="Skip HTML report generation.")
     parser.add_argument("roots", nargs="*")
     return parser.parse_args()
 
@@ -113,7 +110,8 @@ def main() -> int:
     mode = "both"
     roots: List[str] = []
     if args.manifest:
-        entries = parse_manifest(args.manifest)
+        data = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
+        entries = [(e["playlist_url"], e["root"]) for e in (data if isinstance(data, list) else [data])]
         if args.select:
             entries = _select_entry(entries)
         roots.extend([root for _, root in entries])
@@ -129,7 +127,7 @@ def main() -> int:
 
     if not roots:
         raise SystemExit(
-            "Usage: demucs [--manifest FILE] [--api] [--clean] [--report HTML] [--no-report] <ROOT_DIR...> [4|2|both]"
+            "Usage: demucs [--manifest FILE] [--api] [--clean] <ROOT_DIR...> [4|2|both]"
         )
 
     root_contexts: List[RootContext] = []
@@ -288,11 +286,6 @@ def main() -> int:
     finally:
         if args.api:
             sleep_if_awake()
-
-    if not args.no_report:
-        report_path = Path(args.report) if args.report else (repo_root / "reports" / "demucs.html")
-        write_demucs_report([ctx.root for ctx in root_contexts], mode, report_path)
-        print(f"Report written to {report_path}")
 
     return 0
 
