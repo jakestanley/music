@@ -47,6 +47,8 @@ def _run(label: str, cmd: list[str]) -> int:
 
 
 def main() -> int:
+    _STEPS = ["scrape", "resolve", "download", "demucs"]
+
     parser = argparse.ArgumentParser(description="Run the full pipeline for all playlists in the manifest.")
     parser.add_argument("--manifest", default="manifest.json")
     parser.add_argument(
@@ -54,7 +56,14 @@ def main() -> int:
         default="both",
         choices=["4", "2", "both", "skip"],
     )
+    parser.add_argument(
+        "--until",
+        choices=_STEPS,
+        default=_STEPS[-1],
+        help="Stop after this step (default: demucs). e.g. --until resolve",
+    )
     args = parser.parse_args()
+    stop_after = _STEPS.index(args.until)
 
     manifest_path = _ROOT / args.manifest
     if not manifest_path.is_file():
@@ -82,18 +91,23 @@ def main() -> int:
         if _run("scrape", [py, str(_ROOT / "scraper.py"), url, root]) != 0:
             overall_ok = False
             continue
+        if stop_after == 0:
+            continue
 
         # Resolver, download, and demucs all proceed regardless of partial failures.
         # Each step reads state.json and handles an empty work set gracefully.
-        for label, cmd in [
+        remaining = [
             ("resolve",  [py, str(_ROOT / "resolver.py"),  root]),
             ("download", [py, str(_ROOT / "downloader.py"), root]),
             *([] if args.demucs_mode == "skip" else [
                 ("demucs", [py, str(_ROOT / "demucs.py"), root, args.demucs_mode])
             ]),
-        ]:
+        ]
+        for i, (label, cmd) in enumerate(remaining, start=1):
             if _run(label, cmd) != 0:
                 playlist_ok = False
+            if stop_after == i:
+                break
 
         if not playlist_ok:
             overall_ok = False
