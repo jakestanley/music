@@ -24,7 +24,7 @@ python resolver.py <root_dir>
 python downloader.py <root_dir>
 
 # 5) Split stems with Demucs (optional)
-./demucs.sh <root_dir> both
+python demucs.py <root_dir> both
 ```
 
 ## Prerequisites
@@ -77,9 +77,20 @@ Each step is idempotent — re-running skips tracks already at or past its statu
       vocals.wav
 ```
 
+## Scheduling with cron
+
+`batch.py` bootstraps the venv automatically, so the system `python3` is enough:
+
+```
+0 3 * * * python3 /home/jake/Music/batch.py >> /home/jake/Music/logs/batch.log 2>&1
+```
+
+Add with `crontab -e`. Adjust the schedule (`0 3 * * *` = 3 AM daily) to taste.
+`--demucs-mode skip` is useful if you want to separate the download and stem steps.
+
 ## manifest.json
 
-Lists playlists to process. Used by `demucs.sh` and for reference:
+Lists playlists to process. Used by `batch.py` and for reference:
 
 ```json
 [
@@ -90,21 +101,19 @@ Lists playlists to process. Used by `demucs.sh` and for reference:
 ]
 ```
 
-## `demucs.sh`
+## `demucs.py`
 
 Separates MP3s in `<root>/unprocessed/` into stems. Skips tracks that already have outputs.
 
 ```bash
-./demucs.sh [--manifest manifest.json] [--select] [--api] <root_dir...> [4|2|both]
+python demucs.py [--api] <root_dir> [4|2|both]
 ```
 
 | Option | Description |
 |--------|-------------|
-| `--manifest <FILE>` | read roots from manifest |
-| `--select` | interactively choose one playlist from the manifest |
 | `--api` | submit to Demucs HTTP API instead of running locally |
 | `--api-max-duration-seconds <N>` | skip files longer than N seconds before submission (default 1200) |
-| `[4\|2\|both]` | stem mode: 4-stem, 2-stem vocal isolate, or both |
+| `[4\|2\|both]` | stem mode: 4-stem, 2-stem vocal isolate, or both (default: both) |
 
 ### Demucs API
 
@@ -131,14 +140,6 @@ pipx install demucs --python "C:\...\Python311\python.exe"
 pipx runpip demucs install "torch==2.1.*" "torchvision==0.16.*" "torchaudio==2.1.*" --index-url https://download.pytorch.org/whl/cu121
 pipx runpip demucs install "numpy<2"   # if NumPy 2.x errors
 pipx runpip demucs install soundfile   # if torchaudio can't write WAVs
-```
-
-## `ytdlp.sh`
-
-Download a single YouTube video as a tagged MP3.
-
-```bash
-./ytdlp.sh <youtube_url> <target_dir> <artist> <title>
 ```
 
 ## Syncing
