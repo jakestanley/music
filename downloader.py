@@ -4,7 +4,7 @@ Download resolved tracks from state.json to MP3 using yt-dlp.
 Usage:
     python downloader.py <root_dir>
 
-Reads SPOTDL_COOKIE_FILE from the environment (required for YouTube access).
+Reads YOUTUBE_COOKIE_FILE from the environment (required for YouTube access).
 
 Example:
     python downloader.py "/home/jake/Music/Playlists/BATW Rejects"
@@ -60,9 +60,9 @@ def main() -> int:
         print("Nothing to download.")
         return 0
 
-    cookie_file = os.environ.get("SPOTDL_COOKIE_FILE")
+    cookie_file = os.environ.get("YOUTUBE_COOKIE_FILE")
     if not cookie_file:
-        print("ERROR: SPOTDL_COOKIE_FILE is not set", file=sys.stderr)
+        print("ERROR: YOUTUBE_COOKIE_FILE is not set", file=sys.stderr)
         return 1
     cookie_file = str(Path(cookie_file).expanduser())
 

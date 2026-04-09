@@ -105,10 +105,10 @@ def main() -> int:
     playlist_url = sys.argv[1]
     explicit_root = sys.argv[2] if len(sys.argv) == 3 else None
 
-    client_id = os.environ.get("SPOTDL_CLIENT_ID", "")
-    client_secret = os.environ.get("SPOTDL_CLIENT_SECRET", "")
+    client_id = os.environ.get("SPOTIFY_CLIENT_ID", "")
+    client_secret = os.environ.get("SPOTIFY_CLIENT_SECRET", "")
     if not client_id or not client_secret:
-        print("ERROR: SPOTDL_CLIENT_ID and SPOTDL_CLIENT_SECRET must be set", file=sys.stderr)
+        print("ERROR: SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET must be set", file=sys.stderr)
         return 1
 
     playlist_id = _playlist_id_from_url(playlist_url)

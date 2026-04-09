@@ -32,8 +32,8 @@ python demucs.py <root_dir> both
 - Python 3.10+
 - `node` (v20+) on your `PATH` — yt-dlp uses it to solve YouTube's JS signature challenge
 - `demucs` for stem separation
-- Spotify API credentials: `SPOTDL_CLIENT_ID` and `SPOTDL_CLIENT_SECRET` (create an app at https://developer.spotify.com/dashboard)
-- YouTube cookies: `SPOTDL_COOKIE_FILE` must point to a Netscape-format cookies file exported from a browser logged into YouTube (e.g. via the **Get cookies.txt LOCALLY** extension)
+- Spotify API credentials: `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET` (create an app at https://developer.spotify.com/dashboard)
+- YouTube cookies: `YOUTUBE_COOKIE_FILE` must point to a Netscape-format cookies file exported from a browser logged into YouTube (e.g. via the **Get cookies.txt LOCALLY** extension)
 
 ## State
 
