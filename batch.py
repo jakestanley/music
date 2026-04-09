@@ -32,6 +32,7 @@ if Path(sys.executable).resolve() != _VENV_PYTHON.resolve():
 import argparse
 import datetime
 import json
+import os
 
 
 def _now() -> str:
@@ -40,7 +41,9 @@ def _now() -> str:
 
 def _run(label: str, cmd: list[str]) -> int:
     print(f"[{_now()}] {label}: {' '.join(cmd)}", flush=True)
-    result = subprocess.run(cmd)
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    result = subprocess.run(cmd, env=env)
     if result.returncode != 0:
         print(f"[{_now()}] {label}: exited {result.returncode}", flush=True)
     return result.returncode
