@@ -82,7 +82,7 @@ Each step is idempotent — re-running skips tracks already at or past its statu
 `batch.py` bootstraps the venv automatically, so the system `python3` is enough:
 
 ```
-0 3 * * * python3 /home/jake/Music/batch.py >> /home/jake/Music/logs/batch.log 2>&1
+0 3 * * * python3 /home/jake/Music/batch.py --demucs-api >> /home/jake/Music/logs/batch.log 2>&1
 ```
 
 Add with `crontab -e`. Adjust the schedule (`0 3 * * *` = 3 AM daily) to taste.
