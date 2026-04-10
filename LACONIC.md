@@ -1,4 +1,4 @@
 # music
 
-Helper scripts to mirror playlists into local MP3 folders and generate Demucs stems.
-Uses `manifest.json` + `spotdl` (with `yt-dlp` fallback) to populate `unprocessed/`, then splits to `all/` and `vocals/`.
+Helper scripts to mirror Spotify playlists into local MP3 folders and generate Demucs stems.
+Uses a three-step pipeline (scrape → resolve → download) with per-playlist `state.json`, then splits to `all/` and `vocals/` via Demucs.
