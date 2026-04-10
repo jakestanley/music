@@ -84,13 +84,13 @@ def main() -> int:
 
     py = sys.executable
     overall_ok = True
+    valid_entries = [e for e in entries if (e.get("playlist_url") or e.get("url")) and e.get("root")]
+    last_idx = len(valid_entries) - 1
 
-    for entry in entries:
+    for idx, entry in enumerate(valid_entries):
         url = entry.get("playlist_url") or entry.get("url", "")
         root = entry.get("root", "")
-        if not url or not root:
-            print(f"[{_now()}] Skipping invalid manifest entry: {entry}", flush=True)
-            continue
+        is_last = idx == last_idx
 
         print(f"\n[{_now()}] === {root} ===", flush=True)
         playlist_ok = True
@@ -104,14 +104,16 @@ def main() -> int:
 
         # Resolver, download, and demucs all proceed regardless of partial failures.
         # Each step reads state.json and handles an empty work set gracefully.
+        demucs_cmd = (
+            [py, str(_ROOT / "demucs.py")]
+            + (["--api"] if args.demucs_api else [])
+            + (["--sleep"] if args.demucs_api and is_last else [])
+            + [root, args.demucs_mode]
+        )
         remaining = [
             ("resolve",  [py, str(_ROOT / "resolver.py"),  root]),
             ("download", [py, str(_ROOT / "downloader.py"), root]),
-            *([] if args.demucs_mode == "skip" else [
-                ("demucs", [py, str(_ROOT / "demucs.py")]
-                    + (["--api"] if args.demucs_api else [])
-                    + [root, args.demucs_mode])
-            ]),
+            *([] if args.demucs_mode == "skip" else [("demucs", demucs_cmd)]),
         ]
         for i, (label, cmd) in enumerate(remaining, start=1):
             if _run(label, cmd) != 0:

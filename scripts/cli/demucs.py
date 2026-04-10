@@ -23,6 +23,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--clean", action="store_true")
     parser.add_argument("--api", action="store_true", help="Use the Demucs HTTP API instead of local execution.")
+    parser.add_argument("--sleep", action="store_true", help="With --api, sleep the server after completion.")
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -284,7 +285,7 @@ def main() -> int:
 
             caches[ctx.root].save()
     finally:
-        if args.api:
+        if args.api and args.sleep:
             sleep_if_awake()
 
     return 0
