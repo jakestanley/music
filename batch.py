@@ -18,7 +18,7 @@ _ROOT = Path(__file__).parent
 _VENV = _ROOT / ".venv"
 _VENV_PYTHON = _VENV / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
 
-if Path(sys.executable).resolve() != _VENV_PYTHON.resolve():
+if not Path(sys.executable).is_relative_to(_VENV):
     if not _VENV_PYTHON.exists():
         print("Initialising venv...", flush=True)
         subprocess.run([sys.executable, "-m", "venv", str(_VENV)], check=True)
