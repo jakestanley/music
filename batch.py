@@ -34,6 +34,9 @@ import datetime
 import json
 import os
 
+from scripts.core.env import load_env
+load_env(str(_ROOT / ".env"))
+
 
 def _now() -> str:
     return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -107,7 +110,6 @@ def main() -> int:
         demucs_cmd = (
             [py, str(_ROOT / "demucs.py")]
             + (["--api"] if args.demucs_api else [])
-            + (["--sleep"] if args.demucs_api and is_last else [])
             + [root, args.demucs_mode]
         )
         remaining = [
@@ -123,6 +125,16 @@ def main() -> int:
 
         if not playlist_ok:
             overall_ok = False
+
+    if args.demucs_api and args.demucs_mode != "skip":
+        from scripts.upsnap.batch import _get_waker, validate_upsnap_env
+        validate_upsnap_env()
+        waker = _get_waker()
+        if waker.status() == "online":
+            print(f"[{_now()}] Sleeping demucs server...", flush=True)
+            waker.sleep()
+        else:
+            print(f"[{_now()}] Demucs server already offline, skipping sleep.", flush=True)
 
     print(f"\n[{_now()}] Batch {'complete' if overall_ok else 'finished with errors'}.", flush=True)
     return 0 if overall_ok else 1

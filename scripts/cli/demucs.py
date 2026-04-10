@@ -10,7 +10,7 @@ from scripts.demucs.cache import HashCache
 from scripts.demucs.hashing import get_file_hash
 from scripts.demucs.local import run_local
 from scripts.demucs.api import RootContext, canonical_output_name, normalize_windows_name, run_windows
-from scripts.upsnap.batch import sleep_if_awake, validate_upsnap_env
+from scripts.upsnap.batch import validate_upsnap_env
 
 
 def _parse_args() -> argparse.Namespace:
@@ -285,8 +285,11 @@ def main() -> int:
 
             caches[ctx.root].save()
     finally:
-        if args.api and args.sleep:
-            sleep_if_awake()
+        if args.api and getattr(args, 'sleep', False):
+            from scripts.upsnap.batch import _get_waker
+            waker = _get_waker()
+            if waker.status() == "online":
+                waker.sleep()
 
     return 0
 
