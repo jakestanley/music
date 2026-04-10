@@ -87,6 +87,7 @@ def main() -> int:
 
     py = sys.executable
     overall_ok = True
+    failures: list[str] = []
     valid_entries = [e for e in entries if (e.get("playlist_url") or e.get("url")) and e.get("root")]
     last_idx = len(valid_entries) - 1
 
@@ -94,12 +95,13 @@ def main() -> int:
         url = entry.get("playlist_url") or entry.get("url", "")
         root = entry.get("root", "")
         is_last = idx == last_idx
+        playlist_name = Path(root).name
 
         print(f"\n[{_now()}] === {root} ===", flush=True)
-        playlist_ok = True
 
         # Scraper is the only hard stop — without metadata nothing else can run.
         if _run("scrape", [py, str(_ROOT / "scraper.py"), url, root]) != 0:
+            failures.append(f"{playlist_name}: scrape failed")
             overall_ok = False
             continue
         if stop_after == 0:
@@ -119,12 +121,10 @@ def main() -> int:
         ]
         for i, (label, cmd) in enumerate(remaining, start=1):
             if _run(label, cmd) != 0:
-                playlist_ok = False
+                failures.append(f"{playlist_name}: {label} exited non-zero")
+                overall_ok = False
             if stop_after == i:
                 break
-
-        if not playlist_ok:
-            overall_ok = False
 
     if args.demucs_api and args.demucs_mode != "skip":
         from scripts.upsnap.batch import _get_waker, validate_upsnap_env
@@ -137,6 +137,9 @@ def main() -> int:
             print(f"[{_now()}] Demucs server already offline, skipping sleep.", flush=True)
 
     print(f"\n[{_now()}] Batch {'complete' if overall_ok else 'finished with errors'}.", flush=True)
+    if failures:
+        for f in failures:
+            print(f"[{_now()}]   - {f}", flush=True)
     return 0 if overall_ok else 1
 
 
