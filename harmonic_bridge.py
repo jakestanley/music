@@ -256,22 +256,60 @@ def _report_join(
             effective_tolerance = widened
 
     target_bpm = (from_bpm + to_bpm) / 2
-    print(
-        f"\n  Single-track bridges  "
-        f"[intermediate keys: {', '.join(sorted(intermediate_keys))}  "
-        f"target ~{target_bpm:.1f} BPM  ±{effective_tolerance:.0f}]"
-    )
+    print(f"\n  Single-track bridges  [target ~{target_bpm:.1f} BPM  ±{effective_tolerance:.0f}]")
+
     if not candidates:
         print("    No candidates found.")
     else:
-        for i, (tid, track, delta) in enumerate(candidates, 1):
-            print(
-                f"  {i:3}. {_track_label(track)}"
-                f"  [{track['camelot_key']}  {track['bpm']} BPM  Δ{delta:.1f}]"
-            )
+        # Group by path position so it's clear what each step leads toward
+        by_key: dict[str, list[tuple[str, dict, float]]] = {}
+        for entry in candidates:
+            by_key.setdefault(entry[1]["camelot_key"], []).append(entry)
+
+        n = 1
+        for step_key in path[1:-1]:
+            step_candidates = by_key.get(step_key, [])
+            steps_remaining = len(path) - path.index(step_key) - 1
+            onwards = f"{step_key} → … → {to_key}" if steps_remaining > 1 else f"{step_key} → {to_key}"
+            print(f"\n    {onwards}  ({steps_remaining} step{'s' if steps_remaining != 1 else ''} to destination)")
+            for tid, track, delta in step_candidates:
+                print(
+                    f"    {n:3}. {_track_label(track)}"
+                    f"  [{track['camelot_key']}  {track['bpm']} BPM  Δ{delta:.1f}]"
+                )
+                n += 1
+            if not step_candidates:
+                print("         —")
 
     if chains:
         _report_chains(path, pool, from_bpm, to_bpm, effective_tolerance)
+
+
+# ---------------------------------------------------------------------------
+# Interactive mode
+# ---------------------------------------------------------------------------
+
+def _pick_pairs_interactively(
+    all_tracks: dict[str, dict],
+) -> list[tuple[str, str]] | None:
+    from scripts.core.picker import pick_track
+
+    track_list = list(all_tracks.items())
+
+    from_result = pick_track(track_list, prompt="From (end of mix):")
+    if from_result is None:
+        return None
+    from_id, from_track = from_result
+
+    to_result = pick_track(track_list, prompt="To (start of next mix):")
+    if to_result is None:
+        return None
+    to_id, to_track = to_result
+
+    print(f"\n  From: {_track_label(from_track)}  [{from_track['camelot_key']}  {from_track['bpm']} BPM]")
+    print(f"  To:   {_track_label(to_track)}  [{to_track['camelot_key']}  {to_track['bpm']} BPM]")
+
+    return [(from_id, to_id)]
 
 
 # ---------------------------------------------------------------------------
@@ -284,9 +322,14 @@ def main() -> int:
     )
     parser.add_argument(
         "joins",
-        nargs="+",
+        nargs="*",
         metavar="FROM_ID:TO_ID",
         help="One or more join pairs as Spotify track IDs separated by ':'",
+    )
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Pick tracks interactively using a fuzzy search UI",
     )
     parser.add_argument(
         "--manifest",
@@ -330,22 +373,31 @@ def main() -> int:
 
     extra_exclude = set(args.exclude)
 
-    pairs: list[tuple[str, str]] = []
-    for join in args.joins:
-        if ":" not in join:
-            print(f"ERROR: join must be FROM_ID:TO_ID, got: {join!r}", file=sys.stderr)
+    if args.interactive:
+        pairs = _pick_pairs_interactively(all_tracks)
+        if pairs is None:
             return 1
-        from_id, to_id = join.split(":", 1)
-        pairs.append((from_id, to_id))
+    else:
+        if not args.joins:
+            parser.error("provide at least one FROM_ID:TO_ID pair, or use --interactive")
+        pairs = []
+        for join in args.joins:
+            if ":" not in join:
+                print(f"ERROR: join must be FROM_ID:TO_ID, got: {join!r}", file=sys.stderr)
+                return 1
+            from_id, to_id = join.split(":", 1)
+            pairs.append((from_id, to_id))
+
+        for from_id, to_id in pairs:
+            for label, tid in (("from", from_id), ("to", to_id)):
+                if tid not in all_tracks:
+                    print(
+                        f"ERROR: {label} track not found or not yet analysed: {tid}",
+                        file=sys.stderr,
+                    )
+                    return 1
 
     for from_id, to_id in pairs:
-        for label, tid in (("from", from_id), ("to", to_id)):
-            if tid not in all_tracks:
-                print(
-                    f"ERROR: {label} track not found or not yet analysed: {tid}",
-                    file=sys.stderr,
-                )
-                return 1
         _report_join(
             from_id=from_id,
             to_id=to_id,
