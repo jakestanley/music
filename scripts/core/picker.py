@@ -32,9 +32,18 @@ def _score(query_norm: str, label_norm: str) -> float:
 
 
 def _search(
-    query: str, tracks: list[tuple[str, dict]]
+    query: str,
+    tracks: list[tuple[str, dict]],
+    sort_ascending: bool | None = None,
 ) -> list[tuple[str, dict, float]]:
     query_norm = _normalise(query)
+    if not query_norm and sort_ascending is not None:
+        # No query — sort by BPM in the direction of travel
+        return sorted(
+            [(tid, t, 1.0) for tid, t in tracks],
+            key=lambda x: float(x[1].get("bpm") or 0),
+            reverse=not sort_ascending,
+        )
     scored = [
         (tid, t, _score(query_norm, _normalise(f"{t['artist']} {t['name']}")))
         for tid, t in tracks
@@ -60,45 +69,73 @@ def _run_picker(
     stdscr: "curses._CursesWindow",
     tracks: list[tuple[str, dict]],
     prompt: str,
+    header: list[str],
+    esc_label: str,
+    sort_ascending: bool | None,
 ) -> tuple[str, dict] | None:
     curses.curs_set(1)
     try:
         curses.use_default_colors()
-        curses.init_pair(1, -1, -1)          # normal
-        curses.init_pair(2, curses.COLOR_BLACK, curses.COLOR_WHITE)  # selected
+        curses.init_pair(1, -1, -1)
+        curses.init_pair(2, curses.COLOR_BLACK, curses.COLOR_WHITE)
     except Exception:
         pass
 
     query = ""
     selected = 0
+    # Rows consumed by header block (lines + separator), then search bar + separator
+    header_rows = len(header) + (1 if header else 0)  # +1 for separator after header
+    chrome_rows = header_rows + 1 + 1 + 1  # search bar + separator + status bar
 
     while True:
-        results = _search(query, tracks)
+        results = _search(query, tracks, sort_ascending)
         height, width = stdscr.getmaxyx()
-        list_height = max(1, height - 3)
+        list_height = max(1, height - chrome_rows)
         visible = results[:list_height]
 
         if selected >= len(visible):
             selected = max(0, len(visible) - 1)
 
         stdscr.erase()
+        row = 0
+
+        # Header lines
+        for line in header:
+            try:
+                stdscr.addstr(row, 0, line[:width])
+            except curses.error:
+                pass
+            row += 1
+
+        # Separator after header (only if header present)
+        if header:
+            try:
+                stdscr.addstr(row, 0, "─" * (width - 1))
+            except curses.error:
+                pass
+            row += 1
 
         # Search bar
-        header = f" {prompt}  {query}"
-        stdscr.addstr(0, 0, header[:width])
-
-        # Separator
+        search_line = f" {prompt}  {query}"
         try:
-            stdscr.addstr(1, 0, "─" * (width - 1))
+            stdscr.addstr(row, 0, search_line[:width])
         except curses.error:
             pass
+        search_row = row
+        row += 1
+
+        # Separator after search bar
+        try:
+            stdscr.addstr(row, 0, "─" * (width - 1))
+        except curses.error:
+            pass
+        row += 1
 
         # Results
-        for i, (tid, track, _score_val) in enumerate(visible):
-            line = _track_line(track, width)
-            row = i + 2
+        for i, (tid, track, _) in enumerate(visible):
             if row >= height - 1:
                 break
+            line = _track_line(track, width)
             try:
                 if i == selected:
                     stdscr.attron(curses.A_REVERSE)
@@ -108,18 +145,19 @@ def _run_picker(
                     stdscr.addstr(row, 0, line[: width - 1])
             except curses.error:
                 pass
+            row += 1
 
         # Status bar
-        status = f" {len(results)} matches   ↑↓ navigate   Enter select   Esc cancel"
+        status = f" {len(results)} matches   ↑↓ navigate   Enter select   Esc {esc_label}"
         try:
             stdscr.addstr(height - 1, 0, status[: width - 1])
         except curses.error:
             pass
 
-        # Cursor after query text
-        cursor_col = min(len(header), width - 1)
+        # Cursor at end of query
+        cursor_col = min(len(search_line), width - 1)
         try:
-            stdscr.move(0, cursor_col)
+            stdscr.move(search_row, cursor_col)
         except curses.error:
             pass
 
@@ -154,15 +192,23 @@ def _run_picker(
 def pick_track(
     tracks: list[tuple[str, dict]],
     prompt: str = "Search:",
+    header: list[str] | None = None,
+    esc_label: str = "cancel",
+    sort_ascending: bool | None = None,
 ) -> tuple[str, dict] | None:
     """
     Launch an interactive curses fuzzy picker over the given track list.
 
     Args:
-        tracks:  list of (track_id, track_dict) pairs
-        prompt:  label shown in the search bar
+        tracks:         list of (track_id, track_dict) pairs
+        prompt:         label shown in the search bar
+        header:         optional lines of static context shown above the search bar
+        esc_label:      label for the Esc key in the status bar (default: "cancel")
+        sort_ascending: when True/False, the default sort (no query) orders by BPM
+                        ascending or descending respectively; entering a query switches
+                        to fuzzy sort, clearing it restores BPM order
 
     Returns:
         (track_id, track_dict) of the selected track, or None if cancelled.
     """
-    return curses.wrapper(_run_picker, tracks, prompt)
+    return curses.wrapper(_run_picker, tracks, prompt, header or [], esc_label, sort_ascending)

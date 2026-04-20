@@ -112,8 +112,6 @@ def _track_label(track: dict) -> str:
 def _find_single_bridges(
     pool: dict[str, dict],
     intermediate_keys: set[str],
-    from_id: str,
-    to_id: str,
     from_bpm: float,
     to_bpm: float,
     tolerance: float,
@@ -201,43 +199,68 @@ def _report_chains(
             print("    None found within BPM tolerance.")
 
 
-def _report_join(
-    from_id: str,
-    to_id: str,
-    all_tracks: dict[str, dict],
-    extra_exclude: set[str],
+def _flex_key(key: str) -> str:
+    """Swap a Camelot key between major (B) and minor (A)."""
+    return key[:-1] + ("B" if key[-1] == "A" else "A")
+
+
+def _path_variants(
+    from_key: str, to_key: str, flex: bool
+) -> list[tuple[str, list[str]]]:
+    """
+    Return (label, path) pairs to consider for a join.
+    With flex=False returns only the direct path.
+    With flex=True also returns paths where one or both anchor keys are
+    swapped to their relative major/minor before pathfinding, deduplicating
+    any variants that produce identical paths.
+    """
+    from_flex = _flex_key(from_key)
+    to_flex = _flex_key(to_key)
+
+    candidates = [("direct", _shortest_path(from_key, to_key))]
+    if flex:
+        candidates += [
+            (f"flex start ({from_key}→{from_flex})", _shortest_path(from_flex, to_key)),
+            (f"flex end ({to_key}→{to_flex})",        _shortest_path(from_key, to_flex)),
+            (f"flex both ({from_key}→{from_flex}, {to_key}→{to_flex})",
+             _shortest_path(from_flex, to_flex)),
+        ]
+
+    seen: set[tuple[str, ...]] = set()
+    unique = []
+    for label, path in candidates:
+        key = tuple(path)
+        if key not in seen:
+            seen.add(key)
+            unique.append((label, path))
+    return unique
+
+
+def _report_path_section(
+    path: list[str],
+    label: str,
+    pool: dict[str, dict],
+    from_bpm: float,
+    to_bpm: float,
     bpm_tolerance: float,
     min_candidates: int,
     chains: bool,
 ) -> None:
-    from_track = all_tracks[from_id]
-    to_track = all_tracks[to_id]
-    from_key = from_track["camelot_key"]
-    to_key = to_track["camelot_key"]
-    from_bpm = float(from_track["bpm"])
-    to_bpm = float(to_track["bpm"])
-
-    print(f"\n{'─' * 60}")
-    print(f"  {_track_label(from_track)}  [{from_key}  {from_bpm} BPM]")
-    print(f"→ {_track_label(to_track)}  [{to_key}  {to_bpm} BPM]")
-
-    path = _shortest_path(from_key, to_key)
+    """Print the path header and bridge candidates for one path variant."""
+    effective_end = path[-1]
     intermediate_keys = set(path[1:-1])
     steps = len(path) - 1
+    path_str = " → ".join(path)
 
+    suffix = f"  [{label}]" if label != "direct" else ""
     if not intermediate_keys:
-        path_str = f"{from_key} → {to_key}"
-        print(f"  Harmonic path: {path_str} ({steps} step — direct, no bridge needed)")
+        print(f"\n  Harmonic path: {path_str} ({steps} step — direct){suffix}")
         return
 
-    path_str = " → ".join(path)
-    print(f"  Harmonic path: {path_str} ({steps} step{'s' if steps != 1 else ''})")
-
-    excluded = extra_exclude | {from_id, to_id}
-    pool = {tid: t for tid, t in all_tracks.items() if tid not in excluded}
+    print(f"\n  Harmonic path: {path_str} ({steps} step{'s' if steps != 1 else ''}){suffix}")
 
     candidates = _find_single_bridges(
-        pool, intermediate_keys, from_id, to_id, from_bpm, to_bpm, bpm_tolerance
+        pool, intermediate_keys, from_bpm, to_bpm, bpm_tolerance
     )
     effective_tolerance = bpm_tolerance
 
@@ -246,7 +269,7 @@ def _report_join(
         while len(candidates) < min_candidates and widened < 60.0:
             widened += _BPM_TOLERANCE_STEP
             candidates = _find_single_bridges(
-                pool, intermediate_keys, from_id, to_id, from_bpm, to_bpm, widened
+                pool, intermediate_keys, from_bpm, to_bpm, widened
             )
         if widened > bpm_tolerance:
             print(
@@ -261,7 +284,6 @@ def _report_join(
     if not candidates:
         print("    No candidates found.")
     else:
-        # Group by path position so it's clear what each step leads toward
         by_key: dict[str, list[tuple[str, dict, float]]] = {}
         for entry in candidates:
             by_key.setdefault(entry[1]["camelot_key"], []).append(entry)
@@ -270,7 +292,11 @@ def _report_join(
         for step_key in path[1:-1]:
             step_candidates = by_key.get(step_key, [])
             steps_remaining = len(path) - path.index(step_key) - 1
-            onwards = f"{step_key} → … → {to_key}" if steps_remaining > 1 else f"{step_key} → {to_key}"
+            onwards = (
+                f"{step_key} → … → {effective_end}"
+                if steps_remaining > 1
+                else f"{step_key} → {effective_end}"
+            )
             print(f"\n    {onwards}  ({steps_remaining} step{'s' if steps_remaining != 1 else ''} to destination)")
             for tid, track, delta in step_candidates:
                 print(
@@ -285,31 +311,182 @@ def _report_join(
         _report_chains(path, pool, from_bpm, to_bpm, effective_tolerance)
 
 
+def _report_join(
+    from_id: str,
+    to_id: str,
+    all_tracks: dict[str, dict],
+    extra_exclude: set[str],
+    bpm_tolerance: float,
+    min_candidates: int,
+    chains: bool,
+    flex: bool,
+) -> None:
+    from_track = all_tracks[from_id]
+    to_track = all_tracks[to_id]
+    from_key = from_track["camelot_key"]
+    to_key = to_track["camelot_key"]
+    from_bpm = float(from_track["bpm"])
+    to_bpm = float(to_track["bpm"])
+
+    print(f"\n{'─' * 60}")
+    print(f"  {_track_label(from_track)}  [{from_key}  {from_bpm} BPM]")
+    print(f"→ {_track_label(to_track)}  [{to_key}  {to_bpm} BPM]")
+
+    excluded = extra_exclude | {from_id, to_id}
+    pool = {tid: t for tid, t in all_tracks.items() if tid not in excluded}
+
+    for label, path in _path_variants(from_key, to_key, flex):
+        _report_path_section(
+            path=path,
+            label=label,
+            pool=pool,
+            from_bpm=from_bpm,
+            to_bpm=to_bpm,
+            bpm_tolerance=bpm_tolerance,
+            min_candidates=min_candidates,
+            chains=chains,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Interactive mode
 # ---------------------------------------------------------------------------
 
-def _pick_pairs_interactively(
+def _path_display(path: list[str], highlight_idx: int) -> str:
+    """Format a path with one step highlighted in brackets."""
+    parts = []
+    for i, key in enumerate(path):
+        parts.append(f"[{key}]" if i == highlight_idx else key)
+    return " → ".join(parts)
+
+
+def _build_bridge_interactively(
     all_tracks: dict[str, dict],
-) -> list[tuple[str, str]] | None:
+    extra_exclude: set[str],
+    bpm_tolerance: float,
+) -> None:
     from scripts.core.picker import pick_track
 
-    track_list = list(all_tracks.items())
+    track_list = sorted(all_tracks.items(), key=lambda x: x[1]["artist"].lower())
 
+    # Pick anchors
     from_result = pick_track(track_list, prompt="From (end of mix):")
     if from_result is None:
-        return None
+        return
     from_id, from_track = from_result
 
     to_result = pick_track(track_list, prompt="To (start of next mix):")
     if to_result is None:
-        return None
+        return
     to_id, to_track = to_result
 
-    print(f"\n  From: {_track_label(from_track)}  [{from_track['camelot_key']}  {from_track['bpm']} BPM]")
-    print(f"  To:   {_track_label(to_track)}  [{to_track['camelot_key']}  {to_track['bpm']} BPM]")
+    from_key = from_track["camelot_key"]
+    to_key   = to_track["camelot_key"]
+    from_bpm = float(from_track["bpm"])
+    to_bpm   = float(to_track["bpm"])
 
-    return [(from_id, to_id)]
+    excluded = extra_exclude | {from_id, to_id}
+    pool = {tid: t for tid, t in all_tracks.items() if tid not in excluded}
+
+    chain: list[tuple[str, dict]] = []
+    current_track = from_track
+
+    full_path = _shortest_path(from_key, to_key)
+
+    while True:
+        current_key = current_track["camelot_key"]
+        current_bpm = float(current_track["bpm"])
+        path = _shortest_path(current_key, to_key)
+        bpm_gap = abs(current_bpm - to_bpm)
+
+        harmonic_done = len(path) <= 2
+        bpm_done = bpm_gap <= bpm_tolerance
+
+        if harmonic_done and bpm_done:
+            break
+
+        step_num = len(chain) + 1
+
+        if not harmonic_done:
+            # Normal harmonic step
+            next_key = path[1]
+            also_key = _flex_key(next_key)
+            target_keys = {next_key, also_key}
+            try:
+                highlight = full_path.index(next_key)
+            except ValueError:
+                highlight = len(full_path) - 1
+            step_desc = f"harmonic step to {next_key}" + (f" or {also_key}" if also_key != next_key else "")
+            path_line = f"  Path: {_path_display(full_path, highlight)}"
+        else:
+            # Harmonically adjacent but BPM gap still too large — BPM bridge
+            # Offer tracks at the current key and its neighbours so we stay harmonic
+            target_keys = {current_key} | set(_neighbours(current_key))
+            step_desc = f"BPM bridge  ({current_bpm:.1f} → {to_bpm:.1f}, gap {bpm_gap:.1f})"
+            path_line = f"  BPM bridge: {current_key} → … → {to_key}  (harmonically direct, {bpm_gap:.1f} BPM gap)"
+
+        # Candidates within BPM tolerance of current track, sorted toward to_bpm
+        step_candidates = sorted(
+            [
+                (tid, t) for tid, t in pool.items()
+                if t["camelot_key"] in target_keys
+                and abs(float(t["bpm"]) - current_bpm) <= bpm_tolerance
+            ],
+            key=lambda x: abs(float(x[1]["bpm"]) - to_bpm),
+        )
+
+        chain_lines = [
+            f"  {_track_label(from_track)}  [{from_key}  {float(from_track['bpm']):.1f} BPM]",
+        ]
+        for _, ct in chain:
+            chain_lines.append(
+                f"  → {_track_label(ct)}  [{ct['camelot_key']}  {float(ct['bpm']):.1f} BPM]"
+            )
+        chain_lines.append(f"  → ???  ← step {step_num}")
+        chain_lines.append(
+            f"  → {_track_label(to_track)}  [{to_key}  {to_bpm:.1f} BPM]"
+        )
+
+        header = [
+            *chain_lines,
+            f"",
+            path_line,
+            f"  Step {step_num} — {step_desc}",
+        ]
+
+        if not step_candidates:
+            print(f"\n  No candidates at {next_key}/{also_key} within ±{bpm_tolerance:.0f} BPM of {current_bpm:.1f} — ending chain.")
+            break
+
+        result = pick_track(
+            step_candidates,
+            prompt=f"Step {step_num}:",
+            header=header,
+            esc_label="finish chain",
+            sort_ascending=to_bpm >= current_bpm,
+        )
+
+        if result is None:  # Esc — user is done
+            break
+
+        tid, track = result
+        chain.append((tid, track))
+        excluded.add(tid)
+        pool = {t: tr for t, tr in pool.items() if t not in excluded}
+        current_track = track
+
+    # Print final chain
+    print(f"\n{'─' * 60}")
+    print(f"  {_track_label(from_track)}  [{from_key}  {float(from_track['bpm']):.1f} BPM]")
+    if chain:
+        for _, track in chain:
+            print(f"  → {_track_label(track)}  [{track['camelot_key']}  {track['bpm']} BPM]")
+    else:
+        remaining = _shortest_path(from_key, to_key)
+        if len(remaining) > 2:
+            print(f"  (no bridge — {len(remaining) - 1} harmonic steps direct)")
+    print(f"  → {_track_label(to_track)}  [{to_key}  {to_bpm:.1f} BPM]")
+    print(f"{'─' * 60}")
 
 
 # ---------------------------------------------------------------------------
@@ -362,6 +539,12 @@ def main() -> int:
         action="store_true",
         help="Also suggest 2- and 3-track bridge chains for multi-step joins (off by default)",
     )
+    parser.add_argument(
+        "--flex",
+        action="store_true",
+        help="Also consider paths where one or both anchor keys are shifted to their "
+             "relative major/minor before pathfinding, widening the candidate pool",
+    )
     args = parser.parse_args()
 
     manifest_path = _ROOT / args.manifest
@@ -374,9 +557,12 @@ def main() -> int:
     extra_exclude = set(args.exclude)
 
     if args.interactive:
-        pairs = _pick_pairs_interactively(all_tracks)
-        if pairs is None:
-            return 1
+        _build_bridge_interactively(
+            all_tracks=all_tracks,
+            extra_exclude=extra_exclude,
+            bpm_tolerance=args.bpm_tolerance,
+        )
+        return 0
     else:
         if not args.joins:
             parser.error("provide at least one FROM_ID:TO_ID pair, or use --interactive")
@@ -406,6 +592,7 @@ def main() -> int:
             bpm_tolerance=args.bpm_tolerance,
             min_candidates=args.min_candidates,
             chains=args.chains,
+            flex=args.flex,
         )
 
     print(f"\n{'─' * 60}")
