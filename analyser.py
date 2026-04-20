@@ -1,63 +1,95 @@
+"""
+Analyse downloaded MP3s for BPM and Camelot key, storing results in state.json.
+
+Usage:
+    python analyser.py <playlist-root>
+
+Requires: aubio, keyfinder-cli
+"""
+
 import argparse
-import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, List
-
-from dotenv import load_dotenv
 
 from scripts.core import state as st
-from scripts.core.paths import ensure_dir, resolve_dir
 
-load_dotenv()
+
+def _aubio_bpm(path: str) -> str | None:
+    result = subprocess.run(["aubio", "tempo", path], capture_output=True, text=True)
+    lines = [l.strip() for l in result.stdout.splitlines() if l.strip()]
+    if not lines:
+        return None
+    try:
+        return str(round(float(lines[-1].split()[0]), 1))
+    except (ValueError, IndexError):
+        return None
+
+
+def _camelot_key(path: str) -> str | None:
+    result = subprocess.run(
+        ["keyfinder-cli", "-n", "camelot", path], capture_output=True, text=True
+    )
+    key = result.stdout.strip()
+    return key if key else None
+
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Analyse MP3s in a folder for key and BPM")
+    parser = argparse.ArgumentParser(
+        description="Analyse MP3s for BPM and Camelot key, storing results in state.json"
+    )
     parser.add_argument("root", help="Playlist root directory containing state.json")
     args = parser.parse_args()
 
     root = Path(args.root).expanduser()
+    playlist_state = st.load(root)
+    if not playlist_state:
+        print(f"ERROR: no state.json found in {root}", file=sys.stderr)
+        return 1
 
-# TODO restore later
-    # playlist_state = st.load(root)
-    # if not playlist_state:
-    #     print(f"ERROR: no state.json found in {root}", file=sys.stderr)
-    #     return 1
-
-    root_mp3s: Dict[str, List[str]] = {}
-
-    base_dir = os.path.join(root, "unprocessed")
-    if not os.path.isdir(base_dir):
-        raise SystemExit(f"Unprocessed directory not found: {base_dir}")
-    
-    mp3_list = [
-        os.path.join(base_dir, f)
-        for f in os.listdir(base_dir)
-        if f.lower().endswith(".mp3") and not f.startswith("._")
+    to_analyse = [
+        (tid, t)
+        for tid, t in playlist_state.get("tracks", {}).items()
+        if t.get("status") in ("downloaded", "stems_done")
+        and t.get("file")
+        and (not t.get("bpm") or not t.get("camelot_key"))
     ]
 
-    mp3_list.sort()
+    if not to_analyse:
+        print("All tracks already analysed.")
+        return 0
 
-    for mp3_file in mp3_list:
-        print(mp3_file)
+    print(f"Analysing {len(to_analyse)} tracks...", flush=True)
+    errors = 0
+    for i, (tid, track) in enumerate(to_analyse, 1):
+        mp3 = track["file"]
+        label = f"{track['artist']} - {track['name']}"
+        print(f"  [{i}/{len(to_analyse)}] {label}", flush=True)
 
-    # remaining_files = len(mp3_list)
+        if not Path(mp3).is_file():
+            print(f"    SKIP: file not found: {mp3}", flush=True)
+            errors += 1
+            continue
 
-    # if remaining_files is not None:
-    #     if remaining_files <= 0:
-    #         mp3_list = []
-    #     else:
-    #         mp3_list = mp3_list[:remaining_files]
-    #         remaining_files -= len(mp3_list)
+        bpm = _aubio_bpm(mp3)
+        key = _camelot_key(mp3)
 
+        if bpm is None:
+            print(f"    WARNING: aubio failed", flush=True)
+            errors += 1
+        if key is None:
+            print(f"    WARNING: keyfinder-cli failed", flush=True)
+            errors += 1
 
+        updates = {k: v for k, v in [("bpm", bpm), ("camelot_key", key)] if v is not None}
+        if updates:
+            st.update_track(playlist_state, tid, **updates)
+            st.save(root, playlist_state)
+            print(f"    {bpm or '?'} BPM  {key or '?'}", flush=True)
 
-#  for f in *.mp3; do                                                                                   │
-#  bpm=$(aubio tempo "$f" | tail -1 | awk '{print $1}')                                                                          │
-#  key=$(keyfinder-cli -n camelot "$f")                                                                                          │
-#  echo "$bpm $key $f" >> info.txt                                                                                               │
-# done | sort -n                     
+    print(f"Done. {len(to_analyse) - errors} ok, {errors} errors.", flush=True)
+    return 0 if errors == 0 else 1
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

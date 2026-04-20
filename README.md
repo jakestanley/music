@@ -25,6 +25,9 @@ python downloader.py <root_dir>
 
 # 5) Split stems with Demucs (optional)
 python demucs.py <root_dir> both
+
+# 6) Analyse BPM and Camelot key
+python analyser.py <root_dir>
 ```
 
 ## Prerequisites
@@ -32,8 +35,36 @@ python demucs.py <root_dir> both
 - Python 3.10+
 - `node` (v20+) on your `PATH` — yt-dlp uses it to solve YouTube's JS signature challenge
 - `demucs` for stem separation
+- `aubio` and `keyfinder-cli` for BPM and key analysis
+  - `sudo apt install aubio-tools` (the pipx/pip version lacks MP3 support)
 - Spotify API credentials: `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET` (create an app at https://developer.spotify.com/dashboard)
 - YouTube cookies: `YOUTUBE_COOKIE_FILE` must point to a Netscape-format cookies file exported from a browser logged into YouTube (e.g. via the **Get cookies.txt LOCALLY** extension)
+
+### Setting up [keyfinder-cli](https://github.com/EvanPurkhiser/keyfinder-cli)
+
+```
+# pre-requisites
+mkdir -p ~/git/github.com
+sudo apt install cmake libfftw3-dev ffmpeg libavformat-dev pkg-config
+
+# set up libkeyfinder (install into a local sandbox so keyfinder-cli can find it)
+git clone git@github.com:mixxxdj/libkeyfinder.git ~/git/github.com/mixxxdj.libkeyfinder
+cd ~/git/github.com/mixxxdj.libkeyfinder
+cmake -DCMAKE_INSTALL_PREFIX=~/.local -S . -B build
+cmake --build build --parallel 4
+cmake --install build
+
+# register the shared library with the system linker
+echo "$HOME/.local/lib" | sudo tee /etc/ld.so.conf.d/user-local.conf
+sudo ldconfig
+
+# set up keyfinder-cli
+git clone git@github.com:evanpurkhiser/keyfinder-cli.git ~/git/github.com/evanpurkhiser.keyfinder-cli
+cd ~/git/github.com/evanpurkhiser.keyfinder-cli
+cmake -DCMAKE_PREFIX_PATH=~/.local -S . -B build
+cmake --build build
+sudo cmake --install build
+```
 
 ## State
 
@@ -50,13 +81,17 @@ Each playlist root contains a `state.json` that is the single shared context bet
       "duration_ms": 213000,
       "status": "downloaded",
       "youtube_url": "https://www.youtube.com/watch?v=...",
-      "file": "/path/to/unprocessed/Artist - Song.mp3"
+      "file": "/path/to/unprocessed/Artist - Song.mp3",
+      "bpm": "128.0",
+      "camelot_key": "8A"
     }
   }
 }
 ```
 
 Status progression: `pending` → `resolved` → `downloaded` → `stems_done`
+
+`bpm` and `camelot_key` are added by `analyser.py` after download; they are independent of the status field.
 
 Each step is idempotent — re-running skips tracks already at or past its status.
 
@@ -86,11 +121,20 @@ Each step is idempotent — re-running skips tracks already at or past its statu
 ```
 
 Add with `crontab -e`. Adjust the schedule (`0 3 * * *` = 3 AM daily) to taste.
-`--demucs-mode skip` is useful if you want to separate the download and stem steps.
+
+`batch.py` runs the full pipeline for every entry in `manifest.json`: scrape → resolve → download → demucs → analyse. Use `--until <step>` to stop early:
+
+```bash
+python batch.py --until resolve   # scrape + resolve only
+python batch.py --until download  # skip demucs and analyse
+python batch.py --until demucs    # skip analyse
+```
+
+`--demucs-mode skip` skips Demucs entirely (analyse still runs).
 
 ## manifest.json
 
-Lists playlists to process. Used by `batch.py` and for reference:
+Lists playlists to process. Used by `batch.py`:
 
 ```json
 [

@@ -53,7 +53,7 @@ def _run(label: str, cmd: list[str]) -> int:
 
 
 def main() -> int:
-    _STEPS = ["scrape", "resolve", "download", "demucs"]
+    _STEPS = ["scrape", "resolve", "download", "demucs", "analyse"]
 
     parser = argparse.ArgumentParser(description="Run the full pipeline for all playlists in the manifest.")
     parser.add_argument("--manifest", default="manifest.json")
@@ -118,6 +118,7 @@ def main() -> int:
             ("resolve",  [py, str(_ROOT / "resolver.py"),  root]),
             ("download", [py, str(_ROOT / "downloader.py"), root]),
             *([] if args.demucs_mode == "skip" else [("demucs", demucs_cmd)]),
+            ("analyse",  [py, str(_ROOT / "analyser.py"),  root]),
         ]
         for i, (label, cmd) in enumerate(remaining, start=1):
             if _run(label, cmd) != 0:
