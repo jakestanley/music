@@ -200,6 +200,45 @@ rsync -av --delete \
   jake@adler:~/Music/Playlists/ ~/Music/Playlists/
 ```
 
+## Supplemental tools
+
+### `harmonic_bridge.py` — mix join suggestions
+
+Finds bridge tracks between two join points in a mix using Camelot wheel rules. Loads all analysed tracks from every playlist in `manifest.json` as the candidate pool.
+
+```bash
+python harmonic_bridge.py FROM_ID:TO_ID [FROM_ID:TO_ID ...] [options]
+```
+
+Track IDs are Spotify track IDs as found in each playlist's `state.json`. Tracks must have been through `analyser.py` first (i.e. have `bpm` and `camelot_key` set).
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--bpm-tolerance BPM` | `10` | Max average BPM difference from the two anchor tracks |
+| `--min-candidates N` | `3` | Widen tolerance automatically if fewer than N candidates found |
+| `--exclude ID [ID ...]` | — | Additional track IDs to exclude from the pool |
+| `--chains` | off | Also suggest 2- and 3-track bridge chains for multi-step joins |
+| `--manifest PATH` | `manifest.json` | Path to manifest |
+
+The anchor tracks themselves are always excluded from the candidate pool.
+
+**Example:**
+
+```bash
+python harmonic_bridge.py 7goE6wDBvkZoeWrFm0EdCg:5RYLa5P4qweEAKq5U1gdcK --chains
+```
+
+```
+  Elijah Kelley - You Can't Stop The Beat  [8A  118.6 BPM]
+→ Queen - A Kind Of Magic - Remastered 2011  [11B  131.4 BPM]
+  Harmonic path: 8A → 9A → 10A → 11A → 11B (4 steps)
+
+  Single-track bridges  [intermediate keys: 9A, 10A, 11A  target ~125.0 BPM  ±10]
+    1. Michael Jackson - P.Y.T. (Pretty Young Thing)  [10A  127.8 BPM  Δ6.4]
+    2. Stargard - Wear It Out  [11A  125.2 BPM  Δ6.4]
+    ...
+```
+
 ## My setup
 
 Mac handles downloads and Mixed In Key. Server runs Demucs. Both share the same `Music/Playlists/` layout so rsync keeps them in sync. Stems are accessed on the Mac via NFS mount directly into Ableton.
