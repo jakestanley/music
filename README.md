@@ -114,10 +114,10 @@ Each step is idempotent — re-running skips tracks already at or past its statu
 
 ## Scheduling with cron
 
-`batch.py` bootstraps the venv automatically, so the system `python3` is enough:
+Use `batch.sh`, which activates the venv and updates dependencies before running:
 
 ```
-0 3 * * * python3 /home/jake/Music/batch.py --demucs-api >> /home/jake/Music/logs/batch.log 2>&1
+0 3 * * * /home/jake/Music/batch.sh --demucs-api >> /home/jake/Music/logs/batch.log 2>&1
 ```
 
 Add with `crontab -e`. Adjust the schedule (`0 3 * * *` = 3 AM daily) to taste.
