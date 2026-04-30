@@ -41,18 +41,20 @@ def save(root: Path, state: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+_METADATA_FIELDS = {"name", "artist", "album", "track_number", "duration_ms"}
+
+
 def merge_tracks(state: dict[str, Any], tracks: list[dict[str, Any]]) -> dict[str, Any]:
-    """Merge scraped tracks into state without overwriting existing progress."""
+    """Merge scraped tracks into state. Metadata fields are always updated;
+    progress fields (status, youtube_url, file, bpm, camelot_key) are preserved."""
     existing = state.setdefault("tracks", {})
     for track in tracks:
         track_id = track["id"]
         if track_id not in existing:
-            existing[track_id] = {
-                "name": track["name"],
-                "artist": track["artist"],
-                "duration_ms": track["duration_ms"],
-                "status": "pending",
-            }
+            existing[track_id] = {"status": "pending"}
+        for field in _METADATA_FIELDS:
+            if field in track:
+                existing[track_id][field] = track[field]
     return state
 
 

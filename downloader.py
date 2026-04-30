@@ -47,6 +47,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Download resolved tracks to MP3.")
     parser.add_argument("root", help="Playlist root directory containing state.json")
     parser.add_argument("--dry-run", action="store_true", help="Print what would be downloaded without downloading")
+    parser.add_argument("--retag", action="store_true", help="Re-apply ID3 tags to already-downloaded tracks and exit")
     args = parser.parse_args()
 
     root = Path(args.root).expanduser()
@@ -54,6 +55,19 @@ def main() -> int:
     if not playlist_state:
         print(f"ERROR: no state.json found in {root}", file=sys.stderr)
         return 1
+
+    if args.retag:
+        downloaded = st.tracks_by_status(playlist_state, "downloaded")
+        print(f"Retagging {len(downloaded)} tracks...")
+        for _, track in downloaded:
+            file_path = track.get("file", "")
+            if not file_path or not Path(file_path).is_file():
+                print(f"  SKIP (file not found): {track.get('artist')} - {track.get('name')}", file=sys.stderr)
+                continue
+            print(f"  {track.get('artist')} - {track.get('name')}")
+            set_id3_tags(file_path, track["artist"], track["name"],
+                         track.get("album", ""), track.get("track_number", 0))
+        return 0
 
     resolved = st.tracks_by_status(playlist_state, "resolved")
     if not resolved:
@@ -76,6 +90,8 @@ def main() -> int:
     for track_id, track in resolved:
         artist = track["artist"]
         name = track["name"]
+        album = track.get("album", "")
+        track_number = track.get("track_number", 0)
         youtube_url = track["youtube_url"]
         basename = f"{sanitize_value(artist)} - {sanitize_value(name)}.%(ext)s"
         output_path = output_dir / basename
@@ -102,7 +118,7 @@ def main() -> int:
             actual_path = str(output_dir / f"{sanitize_value(artist)} - {sanitize_value(name)}.mp3")
 
         try:
-            set_id3_tags(actual_path, artist, name)
+            set_id3_tags(actual_path, artist, name, album, track_number)
         except Exception as exc:
             print(f"    WARNING: failed to set ID3 tags: {exc}", file=sys.stderr)
 

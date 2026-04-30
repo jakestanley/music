@@ -83,6 +83,8 @@ def get_all_playlist_tracks(playlist_id: str, token: str) -> list[dict]:
                 "id": track["id"],
                 "name": track["name"],
                 "artist": track["artists"][0]["name"],
+                "album": track["album"]["name"],
+                "track_number": track["track_number"],
                 "duration_ms": track["duration_ms"],
             })
 
