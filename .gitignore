@@ -1,6 +1,7 @@
 #
 # Ignore common audio/video media so storage stays clean.
 #
+Downloads
 *.aac
 *.aiff
 *.flac
