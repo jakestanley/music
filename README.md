@@ -200,6 +200,81 @@ rsync -av --delete \
   jake@adler:~/Music/Playlists/ ~/Music/Playlists/
 ```
 
+## iPod sync
+
+Scripts live in `ipod/`. `ipod/ipod-sync.py` downloads any pending tracks from `ipod/ipod-manifest.json` then mounts the iPod and syncs new MP3s via gnupod, sending Telegram notifications at each stage.
+
+### Required packages
+
+```bash
+sudo apt install gnupod-tools hfsprogs util-linux
+```
+
+### Telegram bot
+
+The sync script sends three notifications: iPod detected, sync complete (with track counts), and any error details.
+
+1. Create a bot via [@BotFather](https://t.me/BotFather) and copy the token.
+2. Message your bot once, then call `https://api.telegram.org/bot<TOKEN>/getUpdates` to find your user ID.
+3. Add to `.env`:
+
+```
+TELEGRAM_TOKEN=your_bot_token
+ALLOWED_USERS=your_telegram_user_id   # comma-separated for multiple recipients
+```
+
+### Install
+
+Run the install script once. It handles everything — systemd service, udev rule, linger, and passwordless sudo:
+
+```bash
+ipod/install.sh
+```
+
+Steps performed (some require sudo and will prompt):
+
+1. Copies `ipod/ipod-sync.service` to `~/.config/systemd/user/` and enables it
+2. Copies `ipod/ipod-sync.rules` to `/etc/udev/rules.d/99-ipod-sync.rules` and reloads udev
+3. Enables linger so the service manager stays alive after logout
+4. Writes `/etc/sudoers.d/ipod-sync` with `NOPASSWD` for the mount commands `ipod/ipod.sh` needs (`blkid`, `mount`, `umount`, `rmmod`, `modprobe`) — validated with `visudo -c` before install
+
+After install, plugging in the iPod is fully automatic.
+
+### Running as a systemd user service
+
+**Service file** (`ipod/ipod-sync.service`, installed to `~/.config/systemd/user/`):
+
+```ini
+[Unit]
+Description=iPod Auto-Sync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/var/media/Music
+ExecStart=/var/media/Music/ipod/ipod-sync.sh
+StandardOutput=journal
+StandardError=journal
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target
+```
+
+**Quick reference:**
+
+| Task | Command |
+|------|---------|
+| Status | `systemctl --user status ipod-sync.service` |
+| Logs | `journalctl --user -u ipod-sync.service -f` |
+| Restart | `systemctl --user restart ipod-sync.service` |
+| Stop | `systemctl --user stop ipod-sync.service` |
+
+> On headless servers, `sudo loginctl enable-linger jake` ensures the user service manager keeps running after logout so the udev trigger can reach it. The install script does this automatically.
+
+---
+
 ## My setup
 
 Mac handles downloads and Mixed In Key. Server runs Demucs. Both share the same `Music/Playlists/` layout so rsync keeps them in sync. Stems are accessed on the Mac via NFS mount directly into Ableton.

@@ -1,0 +1,5 @@
+# Trigger iPod auto-sync when an Apple HFS+ block device is connected.
+# Installed by install.sh — do not copy manually.
+# Requires: loginctl enable-linger <user>
+SUBSYSTEM=="block", ENV{ID_FS_TYPE}=="hfsplus", ATTRS{idVendor}=="05ac", ACTION=="add", \
+    RUN+="/usr/bin/systemctl --user --machine=jake@.host start --no-block ipod-sync.service"

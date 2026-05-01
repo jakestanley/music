@@ -19,7 +19,7 @@ fi
 
 # --- Download ---
 echo "Downloading iPod playlists..."
-"$SCRIPT_DIR/batch.sh" --manifest ipod-manifest.json --until download
+"$SCRIPT_DIR/../batch.sh" --manifest "ipod/ipod-manifest.json" --until download
 
 # --- Mount iPod ---
 _find_ipod_dev() {

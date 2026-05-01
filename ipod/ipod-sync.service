@@ -1,0 +1,15 @@
+[Unit]
+Description=iPod Auto-Sync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/var/media/Music
+ExecStart=/var/media/Music/ipod/ipod-sync.sh
+StandardOutput=journal
+StandardError=journal
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

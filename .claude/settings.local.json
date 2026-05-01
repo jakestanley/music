@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(aubio tempo:*)",
+      "Bash(ls /home/jake/Music/*.py)",
+      "Bash(python3 find_track.py \"funkytown\")",
+      "Bash(python3 find_track.py \"roxanne\")",
+      "Bash(python3 find_track.py \"lipps funky\")",
+      "Bash(python3 harmonic_bridge.py 7goE6wDBvkZoeWrFm0EdCg:5RYLa5P4qweEAKq5U1gdcK)",
+      "Bash(python3 harmonic_bridge.py 7goE6wDBvkZoeWrFm0EdCg:5RYLa5P4qweEAKq5U1gdcK --flex)",
+      "Bash(python3 -c \"import harmonic_bridge; print\\('ok'\\)\")",
+      "Bash(python3 -c \"import harmonic_bridge; import scripts.core.picker; print\\('ok'\\)\")"
+    ]
+  }
+}
