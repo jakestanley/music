@@ -1,11 +1,8 @@
 import atexit
-import base64
-import json
 import ipaddress
 import os
 import tempfile
 import time
-from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
@@ -23,7 +20,8 @@ _waker: Optional["UpSnapBatchWaker"] = None
 @dataclass(frozen=True)
 class UpSnapConfig:
     base_url: str
-    token: str
+    username: str
+    password: str
     device_name: str
     verify: str | bool
     tls_mode: str
@@ -72,7 +70,8 @@ def _download_ca_cert(url: str) -> str:
 
 def _load_config() -> UpSnapConfig:
     base_url = _validate_dns_url(require_var("UPSNAP_URL"))
-    token = require_var("UPSNAP_BEARER_TOKEN")
+    username = require_var("UPSNAP_USERNAME")
+    password = require_var("UPSNAP_PASSWORD")
     device_name = require_var("UPSNAP_DEVICE_NAME")
     ca_cert = os.environ.get("UPSNAP_CA_CERT")
     insecure_tls = _read_bool_env("UPSNAP_INSECURE_TLS")
@@ -95,7 +94,8 @@ def _load_config() -> UpSnapConfig:
     request_timeout_seconds = _read_float_env("UPSNAP_REQUEST_TIMEOUT_SECS", 30.0)
     return UpSnapConfig(
         base_url=base_url,
-        token=token,
+        username=username,
+        password=password,
         device_name=device_name,
         verify=verify,
         tls_mode=tls_mode,
@@ -123,44 +123,6 @@ def _summarize_device_names(items: list[dict]) -> str:
     return str(names)
 
 
-def _jwt_expiry_from_env() -> Optional[datetime]:
-    token = os.environ.get("UPSNAP_BEARER_TOKEN", "").strip()
-    if not token:
-        return None
-    parts = token.split(".")
-    if len(parts) != 3:
-        return None
-    payload = parts[1]
-    pad_len = (-len(payload)) % 4
-    payload += "=" * pad_len
-    try:
-        raw = base64.urlsafe_b64decode(payload.encode("utf-8"))
-        data = json.loads(raw.decode("utf-8"))
-    except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
-        return None
-    exp = data.get("exp")
-    if not isinstance(exp, (int, float)):
-        return None
-    try:
-        return datetime.fromtimestamp(float(exp), tz=timezone.utc)
-    except (OSError, OverflowError, ValueError):
-        return None
-
-
-def _token_expiry_hint() -> str:
-    expiry = _jwt_expiry_from_env()
-    if not expiry:
-        return "token may have expired; rotate UPSNAP_BEARER_TOKEN"
-    now = datetime.now(timezone.utc)
-    status = "expired" if expiry <= now else "expires"
-    exp_str = expiry.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    return f"token {status} at {exp_str}; rotate UPSNAP_BEARER_TOKEN"
-
-
-def _log_token_expiry_hint() -> None:
-    log(f"UpSnap {_token_expiry_hint()}", quiet=False)
-
-
 def validate_upsnap_env() -> None:
     _load_config()
 
@@ -168,6 +130,7 @@ def validate_upsnap_env() -> None:
 class UpSnapBatchWaker:
     def __init__(self, config: UpSnapConfig) -> None:
         self.config = config
+        self._token: Optional[str] = None
         self._device_id: Optional[str] = None
 
     @classmethod
@@ -178,8 +141,32 @@ class UpSnapBatchWaker:
             log("Warning: UPSNAP_INSECURE_TLS enabled; TLS verification is disabled.", quiet=False)
         return cls(config)
 
+    def _authenticate(self) -> str:
+        if self._token:
+            return self._token
+        url = f"{self.config.base_url}/api/collections/_superusers/auth-with-password"
+        log("UpSnap authenticating with credentials", quiet=False)
+        try:
+            resp = requests.post(
+                url,
+                json={"identity": self.config.username, "password": self.config.password},
+                timeout=self.config.request_timeout_seconds,
+                verify=self.config.verify,
+            )
+        except requests.exceptions.RequestException as exc:
+            raise SystemExit(f"UpSnap authentication request failed: {exc}")
+        if not resp.ok:
+            raise SystemExit(f"UpSnap authentication failed: HTTP {resp.status_code}")
+        token = resp.json().get("token")
+        if not token:
+            raise SystemExit("UpSnap authentication response missing token")
+        if _debug_enabled():
+            log(f"UpSnap debug: authenticated, token={str(token)[:16]}...", quiet=False)
+        self._token = str(token)
+        return self._token
+
     def _headers(self) -> Dict[str, str]:
-        return {"Authorization": f"Bearer {self.config.token}"}
+        return {"Authorization": f"Bearer {self._authenticate()}"}
 
     def _get(self, url: str, operation: str, *, params: Optional[Dict[str, str]] = None) -> requests.Response:
         try:
@@ -209,6 +196,8 @@ class UpSnapBatchWaker:
         resp = self._get(url, "device lookup", params=params)
         if _debug_enabled():
             log(f"UpSnap debug: status={resp.status_code}", quiet=False)
+            body_preview = resp.text[:300] if resp.text else "(empty)"
+            log(f"UpSnap debug: body={body_preview}", quiet=False)
         if not resp.ok:
             raise SystemExit(f"UpSnap device lookup failed: HTTP {resp.status_code}")
         payload = resp.json()
@@ -229,6 +218,8 @@ class UpSnapBatchWaker:
                 resp = self._get(url, "device lookup (scan)", params=scan_params)
                 if _debug_enabled():
                     log(f"UpSnap debug: status={resp.status_code}", quiet=False)
+                    body_preview = resp.text[:300] if resp.text else "(empty)"
+                    log(f"UpSnap debug: body={body_preview}", quiet=False)
                 if not resp.ok:
                     raise SystemExit(f"UpSnap device lookup failed: HTTP {resp.status_code}")
                 payload = resp.json()
@@ -244,9 +235,8 @@ class UpSnapBatchWaker:
                     if isinstance(item.get("name"), str) and item["name"].strip().lower() == wanted
                 ]
                 if len(matches) != 1:
-                    hint = f" ({_token_expiry_hint()})" if len(items) == 0 else ""
                     raise SystemExit(
-                        f"UpSnap device lookup expected 1 match for {self.config.device_name}; got {len(matches)}{hint}"
+                        f"UpSnap device lookup expected 1 match for {self.config.device_name}; got {len(matches)}"
                     )
             items = matches
         device_id = items[0].get("id")

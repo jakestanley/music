@@ -115,7 +115,8 @@ Stem directory names are derived from the MP3 filename via `canonical_output_nam
 | `DEMUCS_API_POLL_SECS` | demucs | Default: `5` |
 | `DEMUCS_API_TIMEOUT_SECS` | demucs | Default: `3600` |
 | `UPSNAP_URL` | batch, demucs | UpSnap API base URL |
-| `UPSNAP_BEARER_TOKEN` | batch, demucs | |
+| `UPSNAP_USERNAME` | batch, demucs | UpSnap admin credentials |
+| `UPSNAP_PASSWORD` | batch, demucs | |
 | `UPSNAP_DEVICE_NAME` | batch, demucs | Device to wake/sleep |
 | `UPSNAP_CA_CERT` | batch, demucs | Self-signed TLS CA |
 | `UPSNAP_INSECURE_TLS` | batch, demucs | Set `true` to skip verification |
