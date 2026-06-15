@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import datetime as _dt
 import json
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Tuple, TypedDict, cast
+from typing import Any, Callable, Dict, Iterable, List, Tuple, TypedDict, cast
 
 import requests
 
@@ -359,6 +359,7 @@ def run_windows(
     dry_run: bool = False,
     max_jobs: int | None = None,
     max_duration_seconds: float = 1200.0,
+    on_file_done: Callable[[str], None] | None = None,
 ) -> None:
     del clean_windows
     base_url = os.environ.get("DEMUCS_API_URL", "https://demucs.stanley.arpa").rstrip("/")
@@ -454,6 +455,8 @@ def run_windows(
                     job_label=job_label,
                 )
                 _log(f"Job {index}/{total_jobs}: output downloaded and installed.")
+                if on_file_done is not None:
+                    on_file_done(file_path)
             except SystemExit as exc:
                 if _is_invalid_mp3_error(exc):
                     skipped_invalid += 1

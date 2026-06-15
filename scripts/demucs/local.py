@@ -4,7 +4,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 from scripts.core.paths import ensure_dir
 
@@ -27,6 +27,7 @@ def run_local(
     base_dir: str,
     all_dir: str,
     vocals_dir: str,
+    on_file_done: Callable[[str], None] | None = None,
 ) -> None:
     files = list(files)
     if not files:
@@ -104,5 +105,8 @@ def run_local(
                         },
                     )
                     continue
+
+        if on_file_done is not None:
+            on_file_done(path)
 
     shutil.rmtree(tmp_dir, ignore_errors=True)

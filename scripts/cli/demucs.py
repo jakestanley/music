@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+from scripts.core import state as st
 from scripts.core.env import load_env
 from scripts.core.paths import ensure_dir, resolve_dir
 from scripts.demucs.cache import HashCache
@@ -264,26 +265,43 @@ def main() -> int:
                 summary += f" (truncated by --max-files from {root_mp3_counts[ctx.root]} available)"
             print(summary)
 
-            demucs_model = os.environ.get("DEMUCS_MODEL", "htdemucs")
-            if args.api:
-                jobs_for_root = remaining_api_jobs
-                if jobs_for_root is not None:
-                    jobs_for_root = min(jobs_for_root, len(missing_files))
-                run_windows(
-                    ctx,
-                    missing_files,
-                    mode,
-                    args.clean,
-                    args.dry_run,
-                    jobs_for_root,
-                    args.api_max_duration_seconds,
-                )
-                if remaining_api_jobs is not None and jobs_for_root is not None:
-                    remaining_api_jobs -= jobs_for_root
-            else:
-                run_local(missing_files, mode, demucs_model, ctx.base_dir, ctx.all_dir, ctx.vocals_dir)
+            root_path = Path(ctx.root)
+            playlist_state = st.load(root_path)
+            file_to_track: Dict[str, str] = {
+                t.get("file"): tid
+                for tid, t in playlist_state.get("tracks", {}).items()
+                if t.get("file")
+            }
 
-            caches[ctx.root].save()
+            def _on_file_done(file_path: str) -> None:
+                track_id = file_to_track.get(file_path)
+                if track_id:
+                    st.update_track(playlist_state, track_id, status="stems_done")
+                    st.save(root_path, playlist_state)
+
+            demucs_model = os.environ.get("DEMUCS_MODEL", "htdemucs")
+            try:
+                if args.api:
+                    jobs_for_root = remaining_api_jobs
+                    if jobs_for_root is not None:
+                        jobs_for_root = min(jobs_for_root, len(missing_files))
+                    run_windows(
+                        ctx,
+                        missing_files,
+                        mode,
+                        args.clean,
+                        args.dry_run,
+                        jobs_for_root,
+                        args.api_max_duration_seconds,
+                        on_file_done=_on_file_done,
+                    )
+                    if remaining_api_jobs is not None and jobs_for_root is not None:
+                        remaining_api_jobs -= jobs_for_root
+                else:
+                    run_local(missing_files, mode, demucs_model, ctx.base_dir, ctx.all_dir, ctx.vocals_dir,
+                              on_file_done=_on_file_done)
+            finally:
+                caches[ctx.root].save()
     finally:
         if args.api and getattr(args, 'sleep', False):
             from scripts.upsnap.batch import _get_waker
