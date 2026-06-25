@@ -27,18 +27,16 @@ _find_ipod_dev() {
 }
 
 if ! mountpoint -q "$IPOD_MOUNT"; then
+    # Give the kernel a moment to finish probing the filesystem after udev fires.
+    sleep 3
     dev=$(_find_ipod_dev)
     if [ -z "$dev" ]; then
-        if ! dmesg | grep -qi "ipod\|05ac:"; then
-            echo "ERROR: iPod not detected. Is it connected?"
-            exit 1
-        fi
-        echo "iPod detected but not accessible — reloading USB storage driver..."
+        echo "iPod not immediately accessible — reloading USB storage driver..."
         sudo rmmod uas 2>/dev/null || true
         sudo rmmod usb_storage 2>/dev/null || true
         sudo modprobe usb_storage
         echo "Waiting for device..."
-        sleep 4
+        sleep 5
         dev=$(_find_ipod_dev)
     fi
     if [ -z "$dev" ]; then

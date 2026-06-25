@@ -10,6 +10,7 @@ ExecStart=/var/media/Music/ipod/ipod-sync.sh
 StandardOutput=journal
 StandardError=journal
 Environment=PYTHONUNBUFFERED=1
+StartLimitIntervalSec=0
 
 [Install]
 WantedBy=default.target
