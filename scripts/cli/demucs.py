@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import shutil
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -123,13 +124,13 @@ def main() -> int:
 
     if roots:
         last_arg = roots[-1]
-        if last_arg in {"4", "2", "both"}:
+        if last_arg in {"4", "2", "both", "instrumental"}:
             mode = last_arg
             roots = roots[:-1]
 
     if not roots:
         raise SystemExit(
-            "Usage: demucs [--manifest FILE] [--api] [--clean] <ROOT_DIR...> [4|2|both]"
+            "Usage: demucs [--manifest FILE] [--api] [--clean] <ROOT_DIR...> [4|2|both|instrumental]"
         )
 
     root_contexts: List[RootContext] = []
@@ -171,7 +172,8 @@ def main() -> int:
     hash_to_all_dir: Dict[str, str] = {}
     hash_to_vocals_dir: Dict[str, str] = {}
 
-    for ctx in root_contexts:
+    # Instrumental mode produces flat WAVs, not stem directories — no hash dedup.
+    for ctx in root_contexts if mode != "instrumental" else []:
         mp3_list = root_mp3s[ctx.root]
         if not mp3_list:
             continue
@@ -227,36 +229,41 @@ def main() -> int:
                     if win_name and win_name != name:
                         candidates.append(win_name)
 
-                need_all = mode in {"4", "both"} and not _find_stem_dir(ctx.all_dir, candidates)
-                need_vocals = mode in {"2", "both"} and not _find_stem_dir(ctx.vocals_dir, candidates)
-
-                if need_all or need_vocals:
-                    digest = get_file_hash(path, caches[ctx.root])
+                if mode == "instrumental":
+                    # Done when the flat WAV exists in the playlist root.
+                    if not os.path.isfile(os.path.join(ctx.root, f"{name}.wav")):
+                        missing_files.append(path)
                 else:
-                    digest = ""
+                    need_all = mode in {"4", "both"} and not _find_stem_dir(ctx.all_dir, candidates)
+                    need_vocals = mode in {"2", "both"} and not _find_stem_dir(ctx.vocals_dir, candidates)
 
-                if need_all and digest in hash_to_all_dir:
-                    src_dir = hash_to_all_dir[digest]
-                    dest_dir = os.path.join(ctx.all_dir, name)
-                    if not os.path.exists(dest_dir):
-                        os.symlink(src_dir, dest_dir)
-                        print(f"✓ exists, symlinking {dest_dir} -> {src_dir}")
-                        symlinked += 1
-                    if os.path.isfile(os.path.join(dest_dir, "vocals.wav")):
-                        need_all = False
+                    if need_all or need_vocals:
+                        digest = get_file_hash(path, caches[ctx.root])
+                    else:
+                        digest = ""
 
-                if need_vocals and digest in hash_to_vocals_dir:
-                    src_dir = hash_to_vocals_dir[digest]
-                    dest_dir = os.path.join(ctx.vocals_dir, name)
-                    if not os.path.exists(dest_dir):
-                        os.symlink(src_dir, dest_dir)
-                        print(f"✓ exists, symlinking {dest_dir} -> {src_dir}")
-                        symlinked += 1
-                    if os.path.isfile(os.path.join(dest_dir, "vocals.wav")):
-                        need_vocals = False
+                    if need_all and digest in hash_to_all_dir:
+                        src_dir = hash_to_all_dir[digest]
+                        dest_dir = os.path.join(ctx.all_dir, name)
+                        if not os.path.exists(dest_dir):
+                            os.symlink(src_dir, dest_dir)
+                            print(f"✓ exists, symlinking {dest_dir} -> {src_dir}")
+                            symlinked += 1
+                        if os.path.isfile(os.path.join(dest_dir, "vocals.wav")):
+                            need_all = False
 
-                if need_all or need_vocals:
-                    missing_files.append(path)
+                    if need_vocals and digest in hash_to_vocals_dir:
+                        src_dir = hash_to_vocals_dir[digest]
+                        dest_dir = os.path.join(ctx.vocals_dir, name)
+                        if not os.path.exists(dest_dir):
+                            os.symlink(src_dir, dest_dir)
+                            print(f"✓ exists, symlinking {dest_dir} -> {src_dir}")
+                            symlinked += 1
+                        if os.path.isfile(os.path.join(dest_dir, "vocals.wav")):
+                            need_vocals = False
+
+                    if need_all or need_vocals:
+                        missing_files.append(path)
 
             summary = (
                 f"Root summary for {ctx.root}: {len(mp3_list)} tracks, {symlinked} symlinked, {len(missing_files)} to process."
@@ -274,11 +281,27 @@ def main() -> int:
             }
 
             def _on_file_done(file_path: str) -> None:
+                if mode == "instrumental":
+                    name = os.path.splitext(os.path.basename(file_path))[0]
+                    candidates = [name]
+                    if args.api:
+                        win_name = normalize_windows_name(name)
+                        if win_name and win_name != name:
+                            candidates.append(win_name)
+                    stem_dir = _find_stem_dir(ctx.vocals_dir, candidates)
+                    if stem_dir:
+                        src = os.path.join(stem_dir, "no_vocals.wav")
+                        dest = os.path.join(ctx.root, f"{name}.wav")
+                        if os.path.isfile(src):
+                            shutil.copy2(src, dest)
+                            print(f"  → instrumental: {dest}")
                 track_id = file_to_track.get(file_path)
                 if track_id:
                     st.update_track(playlist_state, track_id, status="stems_done")
                     st.save(root_path, playlist_state)
 
+            # Instrumental uses 2-stem demucs internally; the flat copy is done by the callback.
+            stem_mode = "2" if mode == "instrumental" else mode
             demucs_model = os.environ.get("DEMUCS_MODEL", "htdemucs")
             try:
                 if args.api:
@@ -288,7 +311,7 @@ def main() -> int:
                     run_windows(
                         ctx,
                         missing_files,
-                        mode,
+                        stem_mode,
                         args.clean,
                         args.dry_run,
                         jobs_for_root,
@@ -298,7 +321,7 @@ def main() -> int:
                     if remaining_api_jobs is not None and jobs_for_root is not None:
                         remaining_api_jobs -= jobs_for_root
                 else:
-                    run_local(missing_files, mode, demucs_model, ctx.base_dir, ctx.all_dir, ctx.vocals_dir,
+                    run_local(missing_files, stem_mode, demucs_model, ctx.base_dir, ctx.all_dir, ctx.vocals_dir,
                               on_file_done=_on_file_done)
             finally:
                 caches[ctx.root].save()

@@ -109,15 +109,23 @@ def main() -> int:
 
         # Resolver, download, and demucs all proceed regardless of partial failures.
         # Each step reads state.json and handles an empty work set gracefully.
+        # Per-entry type overrides the global --demucs-mode (unless it's "skip").
+        entry_type = entry.get("type", "")
+        if args.demucs_mode == "skip":
+            effective_demucs_mode = "skip"
+        elif entry_type == "instrumental":
+            effective_demucs_mode = "instrumental"
+        else:
+            effective_demucs_mode = args.demucs_mode
         demucs_cmd = (
             [py, str(_ROOT / "demucs.py")]
             + (["--api"] if args.demucs_api else [])
-            + [root, args.demucs_mode]
+            + [root, effective_demucs_mode]
         )
         remaining = [
             ("resolve",  [py, str(_ROOT / "resolver.py"),  root]),
             ("download", [py, str(_ROOT / "downloader.py"), root]),
-            *([] if args.demucs_mode == "skip" else [("demucs", demucs_cmd)]),
+            *([] if effective_demucs_mode == "skip" else [("demucs", demucs_cmd)]),
             ("analyse",  [py, str(_ROOT / "analyser.py"),  root]),
         ]
         for i, (label, cmd) in enumerate(remaining, start=1):
