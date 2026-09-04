@@ -14,6 +14,7 @@ from typing import Any, Callable, Dict, Iterable, List, Tuple, TypedDict, cast
 import requests
 
 from scripts.core.paths import ensure_dir
+from scripts.demucs.ensemble import blend_wavs, parse_model_list
 from scripts.upsnap.batch import ensure_awake as ensure_upsnap_awake
 from scripts.upsnap.batch import require_ready as require_upsnap_ready
 from scripts.upsnap.batch import sleep_if_awake as sleep_upsnap_if_awake
@@ -257,6 +258,31 @@ def _copy_mode_dir(src: Path, dest_root: str, track_name: str, mode_label: str) 
     return dest
 
 
+def _blend_mode_dir(
+    source_dirs: List[Path], dest_root: str, track_name: str, mode_label: str, stem_files: List[str]
+) -> Path:
+    dest = Path(dest_root) / track_name
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.mkdir(parents=True, exist_ok=True)
+    for stem_file in stem_files:
+        blend_wavs([d / stem_file for d in source_dirs], dest / stem_file)
+    _log(f"Saved blended {mode_label} output ({len(source_dirs)}-model ensemble): {dest}")
+    return dest
+
+
+def _resolve_extracted_dirs(extract_dir: Path) -> Tuple[Path, Path]:
+    all_dir = extract_dir / "all"
+    vocals_dir = extract_dir / "vocals"
+    # Some archives wrap content in a single top-level directory.
+    if not all_dir.is_dir() and not vocals_dir.is_dir():
+        top_dirs = [p for p in extract_dir.iterdir() if p.is_dir()]
+        if len(top_dirs) == 1:
+            all_dir = top_dirs[0] / "all"
+            vocals_dir = top_dirs[0] / "vocals"
+    return all_dir, vocals_dir
+
+
 def _extract_outputs(zip_path: Path, ctx: RootContext, mode: str, track_name: str) -> None:
     with tempfile.TemporaryDirectory(prefix="demucs_api_") as tmp_dir:
         tmp_dir_path = Path(tmp_dir)
@@ -266,15 +292,7 @@ def _extract_outputs(zip_path: Path, ctx: RootContext, mode: str, track_name: st
         ensure_dir(ctx.all_dir)
         ensure_dir(ctx.vocals_dir)
 
-        all_dir = tmp_dir_path / "all"
-        vocals_dir = tmp_dir_path / "vocals"
-
-        # Some archives wrap content in a single top-level directory.
-        if not all_dir.is_dir() and not vocals_dir.is_dir():
-            top_dirs = [p for p in tmp_dir_path.iterdir() if p.is_dir()]
-            if len(top_dirs) == 1:
-                all_dir = top_dirs[0] / "all"
-                vocals_dir = top_dirs[0] / "vocals"
+        all_dir, vocals_dir = _resolve_extracted_dirs(tmp_dir_path)
 
         copied = False
         if mode in {"4", "both"}:
@@ -328,6 +346,72 @@ def _run_one_file(
         _extract_outputs(zip_path, ctx, mode, track_name)
 
 
+def _run_one_file_ensemble(
+    base_url: str,
+    ctx: RootContext,
+    file_path: str,
+    mode: str,
+    models: List[str],
+    verify: str | bool,
+    poll_seconds: float,
+    timeout_seconds: float,
+    job_label: str | None,
+) -> None:
+    with tempfile.TemporaryDirectory(prefix="demucs_api_ensemble_") as tmp_root:
+        tmp_root_path = Path(tmp_root)
+        model_dirs: List[Tuple[str, Path, Path]] = []
+        for model in models:
+            job_id = _submit_job(base_url, file_path, mode, model, job_label, verify)
+            job = _wait_for_job(base_url, job_id, poll_seconds, timeout_seconds, verify)
+            status = job.get("status")
+            if status != "succeeded":
+                message = job.get("message") or job.get("error") or "unknown error"
+                raise SystemExit(f"Demucs API job failed: {job_id} (model={model}) ({message})")
+
+            zip_path = tmp_root_path / f"{job_id}.zip"
+            _download_output(base_url, job_id, zip_path, verify)
+            extract_dir = tmp_root_path / f"extract_{model}"
+            with zipfile.ZipFile(zip_path) as zip_handle:
+                zip_handle.extractall(extract_dir)
+            all_dir, vocals_dir = _resolve_extracted_dirs(extract_dir)
+            model_dirs.append((model, all_dir, vocals_dir))
+            zip_path.unlink(missing_ok=True)
+
+        ensure_dir(ctx.all_dir)
+        ensure_dir(ctx.vocals_dir)
+
+        stem_name = Path(file_path).stem
+        track_name = canonical_output_name(stem_name) or normalize_windows_name(stem_name) or stem_name
+
+        blended = False
+        if mode in {"4", "both"}:
+            all_sources: List[Path] = []
+            for model, all_dir, _ in model_dirs:
+                if not all_dir.is_dir():
+                    raise SystemExit(f"Demucs API output missing all/ directory for model {model}")
+                is_four, _ = _classify_dir(all_dir)
+                if not is_four:
+                    raise SystemExit(f"Demucs API output all/ for model {model} is missing required 4-stem files")
+                all_sources.append(all_dir)
+            _blend_mode_dir(
+                all_sources, ctx.all_dir, track_name, "4-stem", ["vocals.wav", "drums.wav", "bass.wav", "other.wav"]
+            )
+            blended = True
+        if mode in {"2", "both"}:
+            vocals_sources: List[Path] = []
+            for model, _, vocals_dir in model_dirs:
+                if not vocals_dir.is_dir():
+                    raise SystemExit(f"Demucs API output missing vocals/ directory for model {model}")
+                _, is_two = _classify_dir(vocals_dir)
+                if not is_two:
+                    raise SystemExit(f"Demucs API output vocals/ for model {model} is missing required 2-stem files")
+                vocals_sources.append(vocals_dir)
+            _blend_mode_dir(vocals_sources, ctx.vocals_dir, track_name, "2-stem", ["vocals.wav", "no_vocals.wav"])
+            blended = True
+        if not blended:
+            raise SystemExit("Demucs API output did not contain any requested stems")
+
+
 def _probe_duration_seconds(file_path: str) -> float | None:
     cmd = [
         "ffprobe",
@@ -371,6 +455,7 @@ def run_windows(
         or os.environ.get("DEMUCS_MODEL")
         or "htdemucs_ft"
     )
+    ensemble_models = parse_model_list(os.environ.get("DEMUCS_API_ENSEMBLE_MODELS"), model)
     poll_seconds = _read_env_float("DEMUCS_API_POLL_SECS", 5.0)
     timeout_seconds = _read_env_float("DEMUCS_API_TIMEOUT_SECS", 3600.0)
 
@@ -419,11 +504,15 @@ def run_windows(
     effective_jobs = min(total_jobs, max_jobs) if max_jobs is not None else total_jobs
 
     if dry_run:
+        jobs_per_file = len(ensemble_models)
         _log(
             f"Demucs API dry run: would submit {effective_jobs}/{total_jobs} "
-            f"job(s) (one file per job)."
+            f"file(s), {jobs_per_file} job(s) each."
         )
-        _log(f"Demucs API dry run: endpoint={base_url}/api/jobs mode={mode} model={model} verify={verify!r}")
+        _log(
+            f"Demucs API dry run: endpoint={base_url}/api/jobs mode={mode} "
+            f"models={ensemble_models} verify={verify!r}"
+        )
         for index, file_path in enumerate(missing_files[:effective_jobs], start=1):
             job_label = f"{Path(ctx.root).name} file {Path(file_path).name}"
             _log(f"Dry run job {index}/{total_jobs}: job_label={job_label!r} file={Path(file_path).name}")
@@ -443,17 +532,30 @@ def run_windows(
             _log(f"Job {index}/{total_jobs}: submitting {Path(file_path).name} to {base_url}")
             job_label = f"{Path(ctx.root).name} file {Path(file_path).name}"
             try:
-                _run_one_file(
-                    base_url=base_url,
-                    ctx=ctx,
-                    file_path=file_path,
-                    mode=mode,
-                    model=model,
-                    verify=verify,
-                    poll_seconds=poll_seconds,
-                    timeout_seconds=timeout_seconds,
-                    job_label=job_label,
-                )
+                if len(ensemble_models) > 1:
+                    _run_one_file_ensemble(
+                        base_url=base_url,
+                        ctx=ctx,
+                        file_path=file_path,
+                        mode=mode,
+                        models=ensemble_models,
+                        verify=verify,
+                        poll_seconds=poll_seconds,
+                        timeout_seconds=timeout_seconds,
+                        job_label=job_label,
+                    )
+                else:
+                    _run_one_file(
+                        base_url=base_url,
+                        ctx=ctx,
+                        file_path=file_path,
+                        mode=mode,
+                        model=model,
+                        verify=verify,
+                        poll_seconds=poll_seconds,
+                        timeout_seconds=timeout_seconds,
+                        job_label=job_label,
+                    )
                 _log(f"Job {index}/{total_jobs}: output downloaded and installed.")
                 if on_file_done is not None:
                     on_file_done(file_path)
@@ -469,7 +571,7 @@ def run_windows(
                             "file_path": file_path,
                             "file_name": Path(file_path).name,
                             "mode": mode,
-                            "model": model,
+                            "model": ",".join(ensemble_models),
                             "error_type": "invalid_mp3",
                             "error": str(exc),
                         },
@@ -485,7 +587,7 @@ def run_windows(
                         "file_path": file_path,
                         "file_name": Path(file_path).name,
                         "mode": mode,
-                        "model": model,
+                        "model": ",".join(ensemble_models),
                         "error_type": "job_failed",
                         "error": str(exc),
                     },

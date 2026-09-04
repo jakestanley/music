@@ -110,6 +110,8 @@ Stem directory names are derived from the MP3 filename via `canonical_output_nam
 | `DEFAULT_PLAYLIST_DIRECTORY` | scraper | Fallback root when none given |
 | `DEMUCS_API_URL` | demucs | |
 | `DEMUCS_API_MODEL` | demucs | Default: `htdemucs_ft` |
+| `DEMUCS_API_ENSEMBLE_MODELS` | demucs | Comma-separated models to ensemble via the remote API (blended by sample averaging); overrides `DEMUCS_API_MODEL` when set. Each model must be in the homelab-demucs service's `DEMUCS_MODELS` allowlist (default: `htdemucs,htdemucs_ft,mdx,mdx_q`) or the job is rejected with `unknown_model` |
+| `DEMUCS_ENSEMBLE_MODELS` | demucs | Same, for the local (non-API) demucs path; overrides `DEMUCS_MODEL` when set |
 | `DEMUCS_API_CA_CERT` | demucs | Self-signed TLS CA |
 | `DEMUCS_API_BATCH_SIZE` | demucs | Default: `10` |
 | `DEMUCS_API_POLL_SECS` | demucs | Default: `5` |
