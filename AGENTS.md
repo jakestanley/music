@@ -109,7 +109,7 @@ Stem directory names are derived from the MP3 filename via `canonical_output_nam
 | `YOUTUBE_COOKIE_FILE` | downloader | Netscape-format cookies |
 | `DEFAULT_PLAYLIST_DIRECTORY` | scraper | Fallback root when none given |
 | `DEMUCS_API_URL` | demucs | |
-| `DEMUCS_API_MODEL` | demucs | Default: `htdemucs` |
+| `DEMUCS_API_MODEL` | demucs | Default: `htdemucs_ft` |
 | `DEMUCS_API_CA_CERT` | demucs | Self-signed TLS CA |
 | `DEMUCS_API_BATCH_SIZE` | demucs | Default: `10` |
 | `DEMUCS_API_POLL_SECS` | demucs | Default: `5` |

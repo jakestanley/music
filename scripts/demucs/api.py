@@ -369,7 +369,7 @@ def run_windows(
         os.environ.get("DEMUCS_API_MODEL")
         or os.environ.get("WINDOWS_DEMUCS_MODEL")
         or os.environ.get("DEMUCS_MODEL")
-        or "htdemucs"
+        or "htdemucs_ft"
     )
     poll_seconds = _read_env_float("DEMUCS_API_POLL_SECS", 5.0)
     timeout_seconds = _read_env_float("DEMUCS_API_TIMEOUT_SECS", 3600.0)
