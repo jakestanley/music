@@ -302,7 +302,7 @@ def main() -> int:
 
             # Instrumental uses 2-stem demucs internally; the flat copy is done by the callback.
             stem_mode = "2" if mode == "instrumental" else mode
-            demucs_model = os.environ.get("DEMUCS_MODEL", "htdemucs")
+            demucs_model = os.environ.get("DEMUCS_MODEL", "htdemucs_ft")
             try:
                 if args.api:
                     jobs_for_root = remaining_api_jobs
