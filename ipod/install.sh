@@ -1,6 +1,7 @@
 #!/bin/bash
 # One-time setup for iPod auto-sync.
-# Installs the systemd user service, udev rule, linger, and passwordless sudo.
+# Installs the systemd user service, udev rule and linger; checks that
+# hosts-adler has installed the ipod-device sudo wrapper.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -29,17 +30,17 @@ step "Enabling linger for $USER_NAME (requires sudo)"
 sudo loginctl enable-linger "$USER_NAME"
 echo "Linger enabled"
 
-# 4. Passwordless sudo for mount commands used by ipod.sh
-step "Configuring passwordless sudo (requires sudo)"
-SUDOERS_FILE="/etc/sudoers.d/$SERVICE_NAME"
-SUDOERS_LINE="$USER_NAME ALL=(root) NOPASSWD: /usr/sbin/blkid, /usr/bin/mount, /usr/bin/umount, /usr/sbin/rmmod, /usr/sbin/modprobe"
-TMPFILE="$(mktemp)"
-echo "$SUDOERS_LINE" > "$TMPFILE"
-sudo visudo -c -f "$TMPFILE"
-sudo cp "$TMPFILE" "$SUDOERS_FILE"
-sudo chmod 440 "$SUDOERS_FILE"
-rm -f "$TMPFILE"
-echo "Written $SUDOERS_FILE"
+# 4. Root access for ipod.sh comes from hosts-adler (roles/ipod_sync): the
+#    /usr/local/sbin/ipod-device wrapper plus a sudoers rule allowing only
+#    that. Not installed from here any more - raw passwordless mount and
+#    modprobe would be passwordless root.
+step "Checking for the ipod-device wrapper"
+if sudo -n -l /usr/local/sbin/ipod-device >/dev/null 2>&1; then
+    echo "OK: $USER_NAME can run /usr/local/sbin/ipod-device without a password"
+else
+    echo "MISSING: apply hosts-adler's ipod_sync role (playbooks/ipod_sync.yml)" >&2
+    exit 1
+fi
 
 step "Setup complete. Plug in your iPod to test."
 echo "Logs: journalctl --user -u $SERVICE_NAME.service -f"

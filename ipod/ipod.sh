@@ -2,9 +2,13 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-IPOD_MOUNT="${IPOD_MOUNT:-/mnt/ipod}"
+# Root actions go through /usr/local/sbin/ipod-device (hosts-adler
+# roles/ipod_sync), the only thing jake may sudo without a password. It
+# mounts at a fixed /mnt/ipod.
+IPOD_MOUNT=/mnt/ipod
+IPOD_DEVICE="sudo -n /usr/local/sbin/ipod-device"
 
-trap 'sudo umount "$IPOD_MOUNT" 2>/dev/null || true' EXIT
+trap '$IPOD_DEVICE umount 2>/dev/null || true' EXIT
 
 # --- Preflight ---
 missing=()
@@ -23,7 +27,7 @@ echo "Downloading iPod playlists..."
 
 # --- Mount iPod ---
 _find_ipod_dev() {
-    sudo blkid -t TYPE=hfsplus -o device 2>/dev/null | head -1
+    $IPOD_DEVICE find 2>/dev/null
 }
 
 if ! mountpoint -q "$IPOD_MOUNT"; then
@@ -32,9 +36,7 @@ if ! mountpoint -q "$IPOD_MOUNT"; then
     dev=$(_find_ipod_dev)
     if [ -z "$dev" ]; then
         echo "iPod not immediately accessible — reloading USB storage driver..."
-        sudo rmmod uas 2>/dev/null || true
-        sudo rmmod usb_storage 2>/dev/null || true
-        sudo modprobe usb_storage
+        $IPOD_DEVICE reload-usb
         echo "Waiting for device..."
         sleep 5
         dev=$(_find_ipod_dev)
@@ -44,7 +46,7 @@ if ! mountpoint -q "$IPOD_MOUNT"; then
         exit 1
     fi
     echo "Mounting $dev at $IPOD_MOUNT..."
-    sudo mount -t hfsplus -o "force,rw,uid=$(id -u),gid=$(id -g)" "$dev" "$IPOD_MOUNT"
+    $IPOD_DEVICE mount "$dev"
 fi
 
 # --- Init iPod (first time only) ---
