@@ -12,6 +12,7 @@ from scripts.demucs.cache import HashCache
 from scripts.demucs.hashing import get_file_hash
 from scripts.demucs.local import run_local
 from scripts.demucs.api import RootContext, canonical_output_name, normalize_windows_name, run_windows
+from scripts.demucs.formats import STEM_FORMATS, find_stem_file, has_stem, resolve_stem_format
 from scripts.upsnap.batch import validate_upsnap_env
 
 
@@ -49,6 +50,13 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Process at most this many input MP3 files per root (debug aid).",
     )
+    parser.add_argument(
+        "--format",
+        choices=STEM_FORMATS,
+        default=None,
+        help="Stem output format (default: DEMUCS_STEM_FORMAT, else mp3). "
+        "MP3 bitrate comes from DEMUCS_MP3_BITRATE (default auto: matched to each source).",
+    )
     parser.add_argument("roots", nargs="*")
     return parser.parse_args()
 
@@ -63,7 +71,7 @@ def _find_stem_dir(stem_root: str, candidates: List[str]) -> str | None:
                 if dirname in tried:
                     continue
                 tried.add(dirname)
-                if os.path.isfile(os.path.join(stem_root, dirname, "vocals.wav")):
+                if has_stem(os.path.join(stem_root, dirname)):
                     return os.path.join(stem_root, dirname)
     return None
 
@@ -110,6 +118,7 @@ def main() -> int:
     if args.max_files is not None and args.max_files < 1:
         raise SystemExit("--max-files must be >= 1")
 
+    stem_format = resolve_stem_format(args.format)
     mode = "both"
     roots: List[str] = []
     if args.manifest:
@@ -172,7 +181,7 @@ def main() -> int:
     hash_to_all_dir: Dict[str, str] = {}
     hash_to_vocals_dir: Dict[str, str] = {}
 
-    # Instrumental mode produces flat WAVs, not stem directories — no hash dedup.
+    # Instrumental mode produces flat files, not stem directories — no hash dedup.
     for ctx in root_contexts if mode != "instrumental" else []:
         mp3_list = root_mp3s[ctx.root]
         if not mp3_list:
@@ -230,8 +239,10 @@ def main() -> int:
                         candidates.append(win_name)
 
                 if mode == "instrumental":
-                    # Done when the flat WAV exists in the playlist root.
-                    if not os.path.isfile(os.path.join(ctx.root, f"{name}.wav")):
+                    # Done when the flat instrumental exists in the playlist root, in any format.
+                    if not any(
+                        os.path.isfile(os.path.join(ctx.root, f"{name}.{ext}")) for ext in STEM_FORMATS
+                    ):
                         missing_files.append(path)
                 else:
                     need_all = mode in {"4", "both"} and not _find_stem_dir(ctx.all_dir, candidates)
@@ -249,7 +260,7 @@ def main() -> int:
                             os.symlink(src_dir, dest_dir)
                             print(f"✓ exists, symlinking {dest_dir} -> {src_dir}")
                             symlinked += 1
-                        if os.path.isfile(os.path.join(dest_dir, "vocals.wav")):
+                        if has_stem(dest_dir):
                             need_all = False
 
                     if need_vocals and digest in hash_to_vocals_dir:
@@ -259,7 +270,7 @@ def main() -> int:
                             os.symlink(src_dir, dest_dir)
                             print(f"✓ exists, symlinking {dest_dir} -> {src_dir}")
                             symlinked += 1
-                        if os.path.isfile(os.path.join(dest_dir, "vocals.wav")):
+                        if has_stem(dest_dir):
                             need_vocals = False
 
                     if need_all or need_vocals:
@@ -289,12 +300,11 @@ def main() -> int:
                         if win_name and win_name != name:
                             candidates.append(win_name)
                     stem_dir = _find_stem_dir(ctx.vocals_dir, candidates)
-                    if stem_dir:
-                        src = os.path.join(stem_dir, "no_vocals.wav")
-                        dest = os.path.join(ctx.root, f"{name}.wav")
-                        if os.path.isfile(src):
-                            shutil.copy2(src, dest)
-                            print(f"  → instrumental: {dest}")
+                    src = find_stem_file(stem_dir, "no_vocals") if stem_dir else None
+                    if src is not None:
+                        dest = os.path.join(ctx.root, f"{name}{src.suffix}")
+                        shutil.copy2(src, dest)
+                        print(f"  → instrumental: {dest}")
                 track_id = file_to_track.get(file_path)
                 if track_id:
                     st.update_track(playlist_state, track_id, status="stems_done")
@@ -302,7 +312,7 @@ def main() -> int:
 
             # Instrumental uses 2-stem demucs internally; the flat copy is done by the callback.
             stem_mode = "2" if mode == "instrumental" else mode
-            demucs_model = os.environ.get("DEMUCS_MODEL", "htdemucs")
+            demucs_model = os.environ.get("DEMUCS_MODEL", "htdemucs_ft")
             try:
                 if args.api:
                     jobs_for_root = remaining_api_jobs
@@ -317,12 +327,13 @@ def main() -> int:
                         jobs_for_root,
                         args.api_max_duration_seconds,
                         on_file_done=_on_file_done,
+                        stem_format=stem_format,
                     )
                     if remaining_api_jobs is not None and jobs_for_root is not None:
                         remaining_api_jobs -= jobs_for_root
                 else:
                     run_local(missing_files, stem_mode, demucs_model, ctx.base_dir, ctx.all_dir, ctx.vocals_dir,
-                              on_file_done=_on_file_done)
+                              on_file_done=_on_file_done, stem_format=stem_format)
             finally:
                 caches[ctx.root].save()
     finally:
