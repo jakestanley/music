@@ -14,7 +14,8 @@ from typing import Any, Callable, Dict, Iterable, List, Tuple, TypedDict, cast
 import requests
 
 from scripts.core.paths import ensure_dir
-from scripts.demucs.ensemble import blend_wavs, parse_model_list
+from scripts.demucs.ensemble import blend_stems, parse_model_list
+from scripts.demucs.formats import FOUR_STEMS, TWO_STEMS, WAV, StemFormat
 from scripts.upsnap.batch import ensure_awake as ensure_upsnap_awake
 from scripts.upsnap.batch import require_ready as require_upsnap_ready
 from scripts.upsnap.batch import sleep_if_awake as sleep_upsnap_if_awake
@@ -186,9 +187,12 @@ def _submit_job(
     model: str,
     job_label: str | None,
     verify: str | bool,
+    stem_format: StemFormat = WAV,
 ) -> str:
     url = f"{base_url}/api/jobs"
-    data: Dict[str, str] = {"mode": mode, "model": model}
+    data: Dict[str, str] = {"mode": mode, "model": model, "format": stem_format.ext}
+    if stem_format.mp3_bitrate:
+        data["mp3_bitrate"] = str(stem_format.mp3_bitrate)
     if job_label:
         data["job_label"] = job_label
     filename = os.path.basename(file_path)
@@ -242,11 +246,21 @@ def _download_output(base_url: str, job_id: str, dest_zip: Path, verify: str | b
                 handle.write(chunk)
 
 
-def _classify_dir(path: Path) -> Tuple[bool, bool]:
+def _classify_dir(path: Path, stem_format: StemFormat) -> Tuple[bool, bool]:
     files = {p.name for p in path.iterdir() if p.is_file()}
-    is_four = {"vocals.wav", "drums.wav", "bass.wav", "other.wav"}.issubset(files)
-    is_two = {"vocals.wav", "no_vocals.wav"}.issubset(files)
+    is_four = set(stem_format.files(FOUR_STEMS)).issubset(files)
+    is_two = set(stem_format.files(TWO_STEMS)).issubset(files)
     return is_four, is_two
+
+
+def _missing_stems_message(path: Path, label: str, stem_format: StemFormat) -> str:
+    message = f"Demucs API output {label} is missing required {stem_format.ext} stem files"
+    if stem_format.ext != "wav" and any(p.suffix.lower() == ".wav" for p in path.iterdir()):
+        message += (
+            "; the server returned WAV, so it likely predates format support "
+            "(deploy homelab-demucs with the format option, or set DEMUCS_STEM_FORMAT=wav)"
+        )
+    return message
 
 
 def _copy_mode_dir(src: Path, dest_root: str, track_name: str, mode_label: str) -> Path:
@@ -259,14 +273,20 @@ def _copy_mode_dir(src: Path, dest_root: str, track_name: str, mode_label: str) 
 
 
 def _blend_mode_dir(
-    source_dirs: List[Path], dest_root: str, track_name: str, mode_label: str, stem_files: List[str]
+    source_dirs: List[Path],
+    dest_root: str,
+    track_name: str,
+    mode_label: str,
+    stems: tuple[str, ...],
+    stem_format: StemFormat,
 ) -> Path:
     dest = Path(dest_root) / track_name
     if dest.exists():
         shutil.rmtree(dest)
     dest.mkdir(parents=True, exist_ok=True)
-    for stem_file in stem_files:
-        blend_wavs([d / stem_file for d in source_dirs], dest / stem_file)
+    # Ensemble sources are always fetched as WAV so blending is a single lossy encode.
+    for src_name, dest_name in zip(WAV.files(stems), stem_format.files(stems)):
+        blend_stems([d / src_name for d in source_dirs], dest / dest_name, stem_format.mp3_bitrate)
     _log(f"Saved blended {mode_label} output ({len(source_dirs)}-model ensemble): {dest}")
     return dest
 
@@ -283,7 +303,9 @@ def _resolve_extracted_dirs(extract_dir: Path) -> Tuple[Path, Path]:
     return all_dir, vocals_dir
 
 
-def _extract_outputs(zip_path: Path, ctx: RootContext, mode: str, track_name: str) -> None:
+def _extract_outputs(
+    zip_path: Path, ctx: RootContext, mode: str, track_name: str, stem_format: StemFormat = WAV
+) -> None:
     with tempfile.TemporaryDirectory(prefix="demucs_api_") as tmp_dir:
         tmp_dir_path = Path(tmp_dir)
         with zipfile.ZipFile(zip_path) as zip_handle:
@@ -298,17 +320,17 @@ def _extract_outputs(zip_path: Path, ctx: RootContext, mode: str, track_name: st
         if mode in {"4", "both"}:
             if not all_dir.is_dir():
                 raise SystemExit("Demucs API output missing expected all/ directory")
-            is_four, _ = _classify_dir(all_dir)
+            is_four, _ = _classify_dir(all_dir, stem_format)
             if not is_four:
-                raise SystemExit("Demucs API output all/ directory is missing required 4-stem files")
+                raise SystemExit(_missing_stems_message(all_dir, "all/ directory", stem_format))
             _copy_mode_dir(all_dir, ctx.all_dir, track_name, "4-stem")
             copied = True
         if mode in {"2", "both"}:
             if not vocals_dir.is_dir():
                 raise SystemExit("Demucs API output missing expected vocals/ directory")
-            _, is_two = _classify_dir(vocals_dir)
+            _, is_two = _classify_dir(vocals_dir, stem_format)
             if not is_two:
-                raise SystemExit("Demucs API output vocals/ directory is missing required 2-stem files")
+                raise SystemExit(_missing_stems_message(vocals_dir, "vocals/ directory", stem_format))
             _copy_mode_dir(vocals_dir, ctx.vocals_dir, track_name, "2-stem")
             copied = True
         if not copied:
@@ -330,8 +352,9 @@ def _run_one_file(
     poll_seconds: float,
     timeout_seconds: float,
     job_label: str | None,
+    stem_format: StemFormat = WAV,
 ) -> None:
-    job_id = _submit_job(base_url, file_path, mode, model, job_label, verify)
+    job_id = _submit_job(base_url, file_path, mode, model, job_label, verify, stem_format)
     job = _wait_for_job(base_url, job_id, poll_seconds, timeout_seconds, verify)
     status = job.get("status")
     if status != "succeeded":
@@ -343,7 +366,7 @@ def _run_one_file(
         _download_output(base_url, job_id, zip_path, verify)
         stem_name = Path(file_path).stem
         track_name = canonical_output_name(stem_name) or normalize_windows_name(stem_name) or stem_name
-        _extract_outputs(zip_path, ctx, mode, track_name)
+        _extract_outputs(zip_path, ctx, mode, track_name, stem_format)
 
 
 def _run_one_file_ensemble(
@@ -356,12 +379,14 @@ def _run_one_file_ensemble(
     poll_seconds: float,
     timeout_seconds: float,
     job_label: str | None,
+    stem_format: StemFormat = WAV,
 ) -> None:
     with tempfile.TemporaryDirectory(prefix="demucs_api_ensemble_") as tmp_root:
         tmp_root_path = Path(tmp_root)
         model_dirs: List[Tuple[str, Path, Path]] = []
         for model in models:
-            job_id = _submit_job(base_url, file_path, mode, model, job_label, verify)
+            # Fetch WAV per model; the blend encodes to stem_format once.
+            job_id = _submit_job(base_url, file_path, mode, model, job_label, verify, WAV)
             job = _wait_for_job(base_url, job_id, poll_seconds, timeout_seconds, verify)
             status = job.get("status")
             if status != "succeeded":
@@ -389,24 +414,22 @@ def _run_one_file_ensemble(
             for model, all_dir, _ in model_dirs:
                 if not all_dir.is_dir():
                     raise SystemExit(f"Demucs API output missing all/ directory for model {model}")
-                is_four, _ = _classify_dir(all_dir)
+                is_four, _ = _classify_dir(all_dir, WAV)
                 if not is_four:
                     raise SystemExit(f"Demucs API output all/ for model {model} is missing required 4-stem files")
                 all_sources.append(all_dir)
-            _blend_mode_dir(
-                all_sources, ctx.all_dir, track_name, "4-stem", ["vocals.wav", "drums.wav", "bass.wav", "other.wav"]
-            )
+            _blend_mode_dir(all_sources, ctx.all_dir, track_name, "4-stem", FOUR_STEMS, stem_format)
             blended = True
         if mode in {"2", "both"}:
             vocals_sources: List[Path] = []
             for model, _, vocals_dir in model_dirs:
                 if not vocals_dir.is_dir():
                     raise SystemExit(f"Demucs API output missing vocals/ directory for model {model}")
-                _, is_two = _classify_dir(vocals_dir)
+                _, is_two = _classify_dir(vocals_dir, WAV)
                 if not is_two:
                     raise SystemExit(f"Demucs API output vocals/ for model {model} is missing required 2-stem files")
                 vocals_sources.append(vocals_dir)
-            _blend_mode_dir(vocals_sources, ctx.vocals_dir, track_name, "2-stem", ["vocals.wav", "no_vocals.wav"])
+            _blend_mode_dir(vocals_sources, ctx.vocals_dir, track_name, "2-stem", TWO_STEMS, stem_format)
             blended = True
         if not blended:
             raise SystemExit("Demucs API output did not contain any requested stems")
@@ -444,6 +467,7 @@ def run_windows(
     max_jobs: int | None = None,
     max_duration_seconds: float = 1200.0,
     on_file_done: Callable[[str], None] | None = None,
+    stem_format: StemFormat = WAV,
 ) -> None:
     del clean_windows
     base_url = os.environ.get("DEMUCS_API_URL", "https://demucs.stanley.arpa").rstrip("/")
@@ -511,11 +535,15 @@ def run_windows(
         )
         _log(
             f"Demucs API dry run: endpoint={base_url}/api/jobs mode={mode} "
-            f"models={ensemble_models} verify={verify!r}"
+            f"models={ensemble_models} format={stem_format.describe()} verify={verify!r}"
         )
         for index, file_path in enumerate(missing_files[:effective_jobs], start=1):
             job_label = f"{Path(ctx.root).name} file {Path(file_path).name}"
-            _log(f"Dry run job {index}/{total_jobs}: job_label={job_label!r} file={Path(file_path).name}")
+            file_format = stem_format.for_source(file_path)
+            _log(
+                f"Dry run job {index}/{total_jobs}: job_label={job_label!r} "
+                f"file={Path(file_path).name} format={file_format.describe()}"
+            )
         return
 
     _log("Checking/waking UpSnap target...")
@@ -529,7 +557,11 @@ def run_windows(
             _log(f"Job {index}/{total_jobs}: verifying UpSnap ready...")
             require_upsnap_ready()
             _log(f"Job {index}/{total_jobs}: UpSnap ready.")
-            _log(f"Job {index}/{total_jobs}: submitting {Path(file_path).name} to {base_url}")
+            file_format = stem_format.for_source(file_path)
+            _log(
+                f"Job {index}/{total_jobs}: submitting {Path(file_path).name} to {base_url} "
+                f"(stems: {file_format.describe()})"
+            )
             job_label = f"{Path(ctx.root).name} file {Path(file_path).name}"
             try:
                 if len(ensemble_models) > 1:
@@ -543,6 +575,7 @@ def run_windows(
                         poll_seconds=poll_seconds,
                         timeout_seconds=timeout_seconds,
                         job_label=job_label,
+                        stem_format=file_format,
                     )
                 else:
                     _run_one_file(
@@ -555,6 +588,7 @@ def run_windows(
                         poll_seconds=poll_seconds,
                         timeout_seconds=timeout_seconds,
                         job_label=job_label,
+                        stem_format=file_format,
                     )
                 _log(f"Job {index}/{total_jobs}: output downloaded and installed.")
                 if on_file_done is not None:

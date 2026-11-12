@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Callable, Iterable, List
 
 from scripts.core.paths import ensure_dir
-from scripts.demucs.ensemble import blend_wavs, parse_model_list
+from scripts.demucs.ensemble import blend_stems, parse_model_list
+from scripts.demucs.formats import FOUR_STEMS, TWO_STEMS, WAV, StemFormat, has_stem
 
 
 def _utc_now_iso() -> str:
@@ -27,11 +28,16 @@ def _run_stem(
     path: str,
     tmp_dir: str,
     dest_track_dir: str,
-    stem_filenames: List[str],
+    stems: tuple[str, ...],
+    stem_format: StemFormat,
     mode_label: str,
     errors_log_path: Path,
 ) -> bool:
-    """Run one or more demucs models against `path` and blend matching stems into dest_track_dir."""
+    """Run one or more demucs models against `path` and blend matching stems into dest_track_dir.
+
+    Demucs always writes WAV to tmp_dir; blend_stems averages (for ensembles)
+    and encodes to stem_format in one ffmpeg pass, so there is a single lossy step.
+    """
     name = os.path.splitext(os.path.basename(path))[0]
     model_dirs: List[Path] = []
     for model in models:
@@ -63,8 +69,8 @@ def _run_stem(
     if dest.exists():
         shutil.rmtree(dest)
     dest.mkdir(parents=True, exist_ok=True)
-    for stem_file in stem_filenames:
-        blend_wavs([d / stem_file for d in model_dirs], dest / stem_file)
+    for src_name, dest_name in zip(WAV.files(stems), stem_format.files(stems)):
+        blend_stems([d / src_name for d in model_dirs], dest / dest_name, stem_format.mp3_bitrate)
     for model in models:
         shutil.rmtree(os.path.join(tmp_dir, model), ignore_errors=True)
 
@@ -81,6 +87,7 @@ def run_local(
     all_dir: str,
     vocals_dir: str,
     on_file_done: Callable[[str], None] | None = None,
+    stem_format: StemFormat = WAV,
 ) -> None:
     files = list(files)
     if not files:
@@ -97,16 +104,17 @@ def run_local(
     ensure_dir(all_dir)
     ensure_dir(vocals_dir)
 
-    print(f"Local demucs: processing {len(files)} files in {base_dir} (models: {', '.join(models)})")
+    print(f"Local demucs: processing {len(files)} files in {base_dir} (models: {', '.join(models)}, format: {stem_format.describe()})")
     errors_log_path = Path(base_dir).parent / "demucs.errors.jsonl"
 
     for path in files:
         name = os.path.splitext(os.path.basename(path))[0]
+        file_format = stem_format.for_source(path)
         all_track_dir = os.path.join(all_dir, name)
         vocals_track_dir = os.path.join(vocals_dir, name)
 
         if mode in {"4", "both"}:
-            if os.path.isfile(os.path.join(all_track_dir, "vocals.wav")):
+            if has_stem(all_track_dir):
                 print(f"✓ 4-stem exists: {name}")
             else:
                 print(f"→ Demucs 4-stem: {name}")
@@ -116,14 +124,15 @@ def run_local(
                     path,
                     tmp_dir,
                     all_track_dir,
-                    ["vocals.wav", "drums.wav", "bass.wav", "other.wav"],
+                    FOUR_STEMS,
+                    file_format,
                     "4",
                     errors_log_path,
                 ):
                     continue
 
         if mode in {"2", "both"}:
-            if os.path.isfile(os.path.join(vocals_track_dir, "vocals.wav")):
+            if has_stem(vocals_track_dir):
                 print(f"✓ 2-stem exists: {name}")
             else:
                 print(f"→ Demucs vocals: {name}")
@@ -133,7 +142,8 @@ def run_local(
                     path,
                     tmp_dir,
                     vocals_track_dir,
-                    ["vocals.wav", "no_vocals.wav"],
+                    TWO_STEMS,
+                    file_format,
                     "2",
                     errors_log_path,
                 ):

@@ -79,11 +79,14 @@ st.update_track(state, track_id, **fields)
   unprocessed/     # MP3s named "Artist - Title.mp3"
   all/             # 4-stem output
     Track Name/
-      vocals.wav  drums.wav  bass.wav  other.wav
+      vocals.mp3  drums.mp3  bass.mp3  other.mp3
   vocals/          # 2-stem output
     Track Name/
-      vocals.wav
+      vocals.mp3  no_vocals.mp3
 ```
+
+Stems are MP3 by default (`DEMUCS_STEM_FORMAT` / `--format`, see `scripts/demucs/formats.py`).
+Older stems may be `.wav`; existence checks accept either.
 
 Stem directory names are derived from the MP3 filename via `canonical_output_name()` in `scripts/cli/demucs.py`.
 

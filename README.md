@@ -103,14 +103,18 @@ Each step is idempotent — re-running skips tracks already at or past its statu
   unprocessed/        # downloaded MP3s
   all/                # 4-stem Demucs output
     Track Name/
-      vocals.wav
-      drums.wav
-      bass.wav
-      other.wav
+      vocals.mp3
+      drums.mp3
+      bass.mp3
+      other.mp3
   vocals/             # 2-stem Demucs output
     Track Name/
-      vocals.wav
+      vocals.mp3
+      no_vocals.mp3
 ```
+
+Stems are MP3 by default (`.wav` with `--format wav` / `DEMUCS_STEM_FORMAT=wav`).
+Existing stems in either format are recognised, so switching formats does not reprocess tracks.
 
 ## Scheduling with cron
 
@@ -157,6 +161,7 @@ python demucs.py [--api] <root_dir> [4|2|both]
 |--------|-------------|
 | `--api` | submit to Demucs HTTP API instead of running locally |
 | `--api-max-duration-seconds <N>` | skip files longer than N seconds before submission (default 1200) |
+| `--format mp3\|wav` | stem output format (default: `DEMUCS_STEM_FORMAT`, else `mp3`) |
 | `[4\|2\|both]` | stem mode: 4-stem, 2-stem vocal isolate, or both (default: both) |
 
 ### Demucs API
@@ -171,6 +176,14 @@ Configure in `.env`:
 | `DEMUCS_API_BATCH_SIZE` | `10` |
 | `DEMUCS_API_POLL_SECS` | `5` |
 | `DEMUCS_API_TIMEOUT_SECS` | `3600` |
+| `DEMUCS_STEM_FORMAT` | `mp3` (also applies to local runs) |
+| `DEMUCS_MP3_BITRATE` | `auto` (or 128/160/192/224/256/320) |
+
+With `auto`, each track's stems use the smallest allowed bitrate at or above the
+source MP3's bitrate (128k source → 128k stems, 130k → 160k, 320k → 320k); if the
+source bitrate can't be read, 320k is used. MP3 stems from a single model are
+encoded by the server. With ensembling, each
+model's stems are fetched as WAV, blended locally, then encoded to MP3 once.
 
 Failed jobs are logged to `<root>/demucs.errors.jsonl` and processing continues.
 
